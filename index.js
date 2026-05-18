@@ -45,20 +45,21 @@ async function getTokenPrice(address) {
 // ===============================
 
 function formatPrice(data) {
-  const emoji = data.change24h > 0 ? '📈' : '📉';
+  const trendEmoji = data.change24h > 0 ? '📈' : '📉';
   const arrow = data.change24h > 0 ? '🟢' : '🔴';
 
   return `
-${emoji} *${data.name}* (${data.symbol}) ${arrow}
+${trendEmoji} *${data.name}* (${data.symbol}) ${arrow}
 
 💰 Цена: $${data.price.toFixed(8)}
-📊 24h: ${data.change24h > 0 ? '+' : ''}${data.change24h.toFixed(2)}%
+📊 24h: ${trendEmoji} ${data.change24h > 0 ? '+' : ''}${data.change24h.toFixed(2)}%
 💎 Ликвидность: $${(data.liquidity / 1_000_000).toFixed(2)}M
 📈 Volume 24h: $${(data.volume24h / 1_000_000).toFixed(2)}M
 
 ⏰ ${new Date().toLocaleTimeString('ru-RU')}
   `.trim();
 }
+
 
 // ===============================
 //   ТРЕКИНГ
