@@ -1,0 +1,16 @@
+{
+  "name": "ton-bot",
+  "version": "1.0.0",
+  "description": "TON memcoin tracker bot",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "telegraf": "^4.14.0",
+    "axios": "^1.6.0"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
