@@ -149,12 +149,16 @@ bot.on('text', async (ctx) => {
     {
       parse_mode: 'Markdown',
       reply_markup: Markup.inlineKeyboard([
-        [Markup.button.callback('⚡ 30 сек', `interval_${address}_30000`)],
-        [Markup.button.callback('1️⃣ 1 мин', `interval_${address}_60000`)],
-        [Markup.button.callback('2️⃣ 2 мин', `interval_${address}_120000`)],
-        [Markup.button.callback('5️⃣ 5 мин', `interval_${address}_300000`)],
-        [Markup.button.callback('⏹ Отмена', 'cancel')]
-      ]).reply_markup
+  [Markup.button.callback('⚡ 30 сек', `interval_${address}_30000`)],
+  [Markup.button.callback('1️⃣ 1 мин', `interval_${address}_60000`)],
+  [Markup.button.callback('2️⃣ 2 мин', `interval_${address}_120000`)],
+  [Markup.button.callback('5️⃣ 5 мин', `interval_${address}_300000`)],
+  [Markup.button.callback('🕒 15 мин', `interval_${address}_900000`)],
+  [Markup.button.callback('🕧 30 мин', `interval_${address}_1800000`)],
+  [Markup.button.callback('⏳ 1 час', `interval_${address}_3600000`)],
+  [Markup.button.callback('⏹ Отмена', 'cancel')]
+]).reply_markup
+
     }
   );
 });
@@ -174,11 +178,15 @@ bot.action(/^interval_(.+)_(\d+)$/, (ctx) => {
   }
 
   const intervalName = {
-    30000: '30 сек',
-    60000: '1 мин',
-    120000: '2 мин',
-    300000: '5 мин'
-  }[interval];
+  30000: '30 сек',
+  60000: '1 мин',
+  120000: '2 мин',
+  300000: '5 мин',
+  900000: '15 мин',
+  1800000: '30 мин',
+  3600000: '1 час'
+}[interval];
+
 
   ctx.answerCbQuery(`🚀 Добавлено: ${intervalName}`);
 
