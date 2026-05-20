@@ -29,6 +29,12 @@ function saveUsers(data) {
 
 let users = loadUsers();
 
+// Авто-одобрение администратора
+if (!users[ADMIN_ID]) {
+  users[ADMIN_ID] = { approved: true };
+  saveUsers(users);
+}
+
 // ===============================
 //   ИНИЦИАЛИЗАЦИЯ БОТА
 // ===============================
@@ -177,16 +183,13 @@ bot.on("text", async (ctx) => {
   // ===============================
 
   if (!users[userId]) {
-    users[userId] = {
-      approved: false,
-      username: ctx.from.username || null
-    };
+    users[userId] = { approved: false };
     saveUsers(users);
 
     if (userId !== ADMIN_ID) {
       await bot.telegram.sendMessage(
         ADMIN_ID,
-        `🆕 Новый пользователь @${ctx.from.username || "нет"}\nID: ${userId}`,
+        `🆕 Новый пользователь\nID: ${userId}`,
         {
           reply_markup: {
             inline_keyboard: [
@@ -215,7 +218,7 @@ bot.on("text", async (ctx) => {
 
   if (msg === SECRET_PHRASE && userId === ADMIN_ID) {
     const list = Object.entries(users)
-      .map(([id, u], i) => `${i + 1}) @${u.username || "нет"} — ${u.approved ? "✔" : "❌"}`)
+      .map(([id, u], i) => `${i + 1}) ID: ${id} — ${u.approved ? "✔" : "❌"}`)
       .join("\n");
 
     adminAwaitingNumber = ADMIN_ID;
@@ -242,7 +245,7 @@ bot.on("text", async (ctx) => {
     adminAwaitingNumber = null;
 
     return ctx.reply(
-      `Пользователь: @${user.username || "нет"}\nID: ${targetId}\nСтатус: ${user.approved ? "✔" : "❌"}`,
+      `Пользователь ID: ${targetId}\nСтатус: ${user.approved ? "✔" : "❌"}`,
       {
         reply_markup: {
           inline_keyboard: [
@@ -260,7 +263,6 @@ bot.on("text", async (ctx) => {
   //   ДАЛЬШЕ — ТВОЙ СТАРЫЙ КОД
   // ===============================
 
-  // Если пользователь в процессе выбора
   if (userState.has(userId)) {
     const state = userState.get(userId);
 
@@ -306,7 +308,6 @@ bot.on("text", async (ctx) => {
     }
   }
 
-  // Если пользователь вводит адрес токена
   if (msg.length > 30) {
     ctx.reply("⏳ Проверяю токен...");
 
@@ -350,13 +351,13 @@ bot.on("callback_query", async (ctx) => {
   if (data.startsWith("approve_")) {
     users[userId].approved = true;
     saveUsers(users);
-    await ctx.editMessageText(`✔ Пользователь @${users[userId].username} одобрен.`);
+    await ctx.editMessageText(`✔ Пользователь ID ${userId} одобрен.`);
   }
 
   if (data.startsWith("block_")) {
     users[userId].approved = false;
     saveUsers(users);
-    await ctx.editMessageText(`❌ Пользователь @${users[userId].username} заблокирован.`);
+    await ctx.editMessageText(`❌ Пользователь ID ${userId} заблокирован.`);
   }
 });
 
