@@ -149,7 +149,7 @@ function startAlertTracking(userId, address, threshold, interval) {
 }
 
 // ===============================
-//   ADMIN NOTIFY
+//   ADMIN NOTIFY (DISABLED FOR USER)
 // ===============================
 
 async function notifyAdminNewUser(user) {
@@ -223,17 +223,13 @@ bot.start(async (ctx) => {
 });
 
 // ===============================
-//   APPROVE / BLOCK
+//   APPROVE / BLOCK (NO USER NOTIFY)
 // ===============================
 
 bot.action(/^approve_(\d+)$/, async (ctx) => {
   if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery('❌ Нет доступа');
 
   const targetId = parseInt(ctx.match[1]);
-
-  if (users.get(targetId) === 'approved') {
-    return ctx.answerCbQuery('Уже одобрен');
-  }
 
   users.set(targetId, 'approved');
 
@@ -242,25 +238,12 @@ bot.action(/^approve_(\d+)$/, async (ctx) => {
     ctx.callbackQuery.message.text + '\n\n✅ *Одобрен*',
     { parse_mode: 'Markdown' }
   );
-
-  try {
-    await bot.telegram.sendMessage(
-      targetId,
-      "✅ Твоя заявка одобрена! Теперь можешь пользоваться ботом.\n\nВведи адрес токена TON:"
-    );
-  } catch (err) {
-    console.error("Notify user error:", err.message);
-  }
 });
 
 bot.action(/^block_(\d+)$/, async (ctx) => {
   if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery('❌ Нет доступа');
 
   const targetId = parseInt(ctx.match[1]);
-
-  if (users.get(targetId) === 'blocked') {
-    return ctx.answerCbQuery('Уже заблокирован');
-  }
 
   users.set(targetId, 'blocked');
 
@@ -272,49 +255,43 @@ bot.action(/^block_(\d+)$/, async (ctx) => {
 });
 
 // ===============================
-//   ADMIN COMMAND
+//   ADMIN COMMAND /devbygemsbuyer
 // ===============================
 
-bot.hears(/devbygemsbuyer/i, async (ctx) => {
-  try {
-    const userId = ctx.from.id;
-    if (!isAdmin(userId)) return;
+bot.command("devbygemsbuyer", async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return;
 
-    const allUsers = [...userInfo.entries()];
+  const allUsers = [...userInfo.entries()];
 
-    if (allUsers.length === 0) {
-      return ctx.reply('📭 Нет пользователей.');
-    }
-
-    let text = '👥 *Список пользователей:*\n\n';
-    const buttons = [];
-
-    allUsers.forEach(([id, info], index) => {
-      const username = info.username ? `@${info.username}` : `(без username)`;
-      const status = users.get(id);
-      const statusEmoji =
-        status === 'approved' ? '✅' :
-        status === 'blocked' ? '🚫' :
-        '⏳';
-
-      text += `${index + 1}. ${username} — \`${id}\` ${statusEmoji}\n`;
-
-      buttons.push([
-        Markup.button.callback(
-          `${index + 1}. ${username}`,
-          `manage_${id}`
-        )
-      ]);
-    });
-
-    return ctx.reply(text, {
-      parse_mode: 'Markdown',
-      reply_markup: Markup.inlineKeyboard(buttons).reply_markup
-    });
-
-  } catch (err) {
-    console.error("Admin command error:", err);
+  if (allUsers.length === 0) {
+    return ctx.reply('📭 Нет пользователей.');
   }
+
+  let text = '👥 *Список пользователей:*\n\n';
+  const buttons = [];
+
+  allUsers.forEach(([id, info], index) => {
+    const username = info.username ? `@${info.username}` : `(без username)`;
+    const status = users.get(id);
+    const statusEmoji =
+      status === 'approved' ? '✅' :
+      status === 'blocked' ? '🚫' :
+      '⏳';
+
+    text += `${index + 1}. ${username} — \`${id}\` ${statusEmoji}\n`;
+
+    buttons.push([
+      Markup.button.callback(
+        `${index + 1}. ${username}`,
+        `manage_${id}`
+      )
+    ]);
+  });
+
+  return ctx.reply(text, {
+    parse_mode: 'Markdown',
+    reply_markup: Markup.inlineKeyboard(buttons).reply_markup
+  });
 });
 
 // ===============================
@@ -364,7 +341,7 @@ bot.use(async (ctx, next) => {
   if (!text) return next();
 
   if (text === '/start') return next();
-  if (/devbygemsbuyer/i.test(text)) return next();
+  if (text.startsWith('/devbygemsbuyer')) return next();
 
   if (isBlocked(userId)) return;
 
@@ -408,7 +385,7 @@ bot.command("stop", (ctx) => {
 
   userTrackers.get(userId).forEach(t => clearInterval(t.intervalId));
   userTrackers.delete(userId);
-  ctx.reply("⏹ Все отслеживания остановлены.");
+  ctx.reply("🟦 Все отслеживания остановлены.");
 });
 
 // ===============================
@@ -438,7 +415,7 @@ bot.on("text", async (ctx) => {
   const userId = ctx.from.id;
   const msg = ctx.message.text.trim();
 
-  if (/devbygemsbuyer/i.test(msg)) return;
+  if (msg.startsWith('/devbygemsbuyer')) return;
 
   if (!isApproved(userId)) return;
 
@@ -525,6 +502,17 @@ bot.on("text", async (ctx) => {
   }
 
   ctx.reply("Введи адрес токена TON");
+});
+
+// ===============================
+//   LOGGING (POWERFUL)
+// ===============================
+
+bot.on('message', (ctx) => {
+  console.log("=== NEW MESSAGE ===");
+  console.log("FROM:", ctx.from);
+  console.log("TEXT:", ctx.message.text);
+  console.log("RAW:", JSON.stringify(ctx.message, null, 2));
 });
 
 // ===============================
