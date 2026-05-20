@@ -1,5 +1,6 @@
 const { Telegraf, Markup } = require('telegraf');
 const axios = require('axios');
+const express = require('express'); // <— добавлено для Render
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
@@ -149,7 +150,7 @@ function startAlertTracking(userId, address, threshold, interval) {
 }
 
 // ===============================
-//   ADMIN NOTIFY (DISABLED FOR USER)
+//   ADMIN NOTIFY
 // ===============================
 
 async function notifyAdminNewUser(user) {
@@ -223,7 +224,7 @@ bot.start(async (ctx) => {
 });
 
 // ===============================
-//   APPROVE / BLOCK (NO USER NOTIFY)
+//   APPROVE / BLOCK
 // ===============================
 
 bot.action(/^approve_(\d+)$/, async (ctx) => {
@@ -432,7 +433,6 @@ bot.on("text", async (ctx) => {
           "60000 — 1 мин\n" +
           "300000 — 5 мин\n" +
           "900000 — 15 мин\n" +
-          "1800000 — 30 мин\n" +
           "3600000 — 1 час"
         );
       }
@@ -514,12 +514,24 @@ bot.on('message', (ctx) => {
   }
 });
 
-
 // ===============================
 //   KEEPALIVE + START
 // ===============================
 
 setInterval(() => console.log("💓 keepalive"), 20000);
 
+// ===============================
+//   EXPRESS SERVER FOR RENDER
+// ===============================
+
+const app = express();
+app.get("/", (req, res) => res.send("Bot is running"));
+app.listen(process.env.PORT || 3000, () => {
+  console.log("HTTP server started");
+});
+
+// ===============================
+//   START BOT
+// ===============================
+
 bot.launch();
-console.log("🚀 Bot запущен (Railway-friendly)");
