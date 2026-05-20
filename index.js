@@ -1,4 +1,3 @@
-cat > /mnt/user-data/outputs/index.js << 'ENDOFFILE'
 const { Telegraf, Markup } = require('telegraf');
 const axios = require('axios');
 
@@ -16,28 +15,28 @@ const users = new Map();
 // userId → { username, firstName, requestedAt }
 const userInfo = new Map();
 
-function isAdmin(userId) {
-  return userId === ADMIN_ID;
+function isAdmin(id) {
+  return id === ADMIN_ID;
 }
 
-function isApproved(userId) {
-  if (isAdmin(userId)) return true;
-  return users.get(userId) === 'approved';
+function isApproved(id) {
+  if (isAdmin(id)) return true;
+  return users.get(id) === 'approved';
 }
 
-function isBlocked(userId) {
-  return users.get(userId) === 'blocked';
+function isBlocked(id) {
+  return users.get(id) === 'blocked';
 }
 
 // ===============================
-//   ХРАНИЛИЩЕ СОСТОЯНИЙ
+//   STATE + TRACKERS
 // ===============================
 
 const userState = new Map();
 const userTrackers = new Map();
 
 // ===============================
-//   ПОЛУЧЕНИЕ ДАННЫХ О ТОН-ТОКЕНЕ
+//   TOKEN PRICE API
 // ===============================
 
 async function getTokenPrice(address) {
@@ -60,14 +59,14 @@ async function getTokenPrice(address) {
       symbol: tokenSymbol
     };
 
-  } catch (error) {
-    console.error("API error:", error.message);
+  } catch (err) {
+    console.error("API error:", err.message);
     return null;
   }
 }
 
 // ===============================
-//   ФОРМАТИРОВАНИЕ ВЫВОДА
+//   FORMAT OUTPUT
 // ===============================
 
 function formatPrice(data) {
@@ -87,7 +86,7 @@ ${trendEmoji} *${data.name}* (${data.symbol}) ${arrow}
 }
 
 // ===============================
-//   ТРЕКИНГ
+//   TRACKING
 // ===============================
 
 async function sendPrice(userId, tokenAddress) {
@@ -150,7 +149,7 @@ function startAlertTracking(userId, address, threshold, interval) {
 }
 
 // ===============================
-//   УВЕДОМЛЕНИЕ АДМИНУ О НОВОМ ЮЗЕРЕ
+//   ADMIN NOTIFY
 // ===============================
 
 async function notifyAdminNewUser(user) {
@@ -187,15 +186,13 @@ bot.start(async (ctx) => {
   const userId = ctx.from.id;
   const user = ctx.from;
 
-  // Если заблокирован — молчим
   if (isBlocked(userId)) return;
 
-  // Если уже одобрен или это админ
   if (isApproved(userId)) {
     return ctx.reply(
       "👋 *TON Token Tracker Bot*\n\n" +
-      "Просто введи адрес токена TON.\n" +
-      "Дальше бот сам будет спрашивать:\n" +
+      "Введи адрес токена TON.\n" +
+      "Дальше бот спросит:\n" +
       "• режим (1 или 2)\n" +
       "• порог (%)\n" +
       "• интервал (мс)\n\n" +
@@ -204,7 +201,6 @@ bot.start(async (ctx) => {
     );
   }
 
-  // Новый пользователь — ставим pending
   if (!users.has(userId)) {
     users.set(userId, 'pending');
     userInfo.set(userId, {
@@ -213,33 +209,33 @@ bot.start(async (ctx) => {
       requestedAt: new Date()
     });
 
-    // Уведомляем админа
     await notifyAdminNewUser(user);
 
     return ctx.reply(
       "⏳ Твоя заявка отправлена администратору.\n\n" +
-      "Ожидай подтверждения. Как только тебя одобрят — бот начнёт работать!"
+      "Ожидай подтверждения."
     );
   }
 
-  // Уже в ожидании
   if (users.get(userId) === 'pending') {
-    return ctx.reply("⏳ Твоя заявка уже отправлена. Ожидай одобрения администратора.");
+    return ctx.reply("⏳ Твоя заявка уже отправлена. Ожидай.");
   }
 });
 
 // ===============================
-//   CALLBACK: ОДОБРИТЬ / ЗАБЛОКИРОВАТЬ
+//   APPROVE / BLOCK
 // ===============================
 
 bot.action(/^approve_(\d+)$/, async (ctx) => {
   if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery('❌ Нет доступа');
 
   const targetId = parseInt(ctx.match[1]);
-  users.set(targetId, 'approved');
 
-  const info = userInfo.get(targetId);
-  const username = info?.username ? `@${info.username}` : `ID ${targetId}`;
+  if (users.get(targetId) === 'approved') {
+    return ctx.answerCbQuery('Уже одобрен');
+  }
+
+  users.set(targetId, 'approved');
 
   await ctx.answerCbQuery('✅ Одобрено');
   await ctx.editMessageText(
@@ -247,7 +243,6 @@ bot.action(/^approve_(\d+)$/, async (ctx) => {
     { parse_mode: 'Markdown' }
   );
 
-  // Уведомляем пользователя
   try {
     await bot.telegram.sendMessage(
       targetId,
@@ -262,6 +257,11 @@ bot.action(/^block_(\d+)$/, async (ctx) => {
   if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery('❌ Нет доступа');
 
   const targetId = parseInt(ctx.match[1]);
+
+  if (users.get(targetId) === 'blocked') {
+    return ctx.answerCbQuery('Уже заблокирован');
+  }
+
   users.set(targetId, 'blocked');
 
   await ctx.answerCbQuery('🚫 Заблокирован');
@@ -272,44 +272,53 @@ bot.action(/^block_(\d+)$/, async (ctx) => {
 });
 
 // ===============================
-//   ADMIN КОМАНДА: ..devbygemsbuyer
+//   ADMIN COMMAND
 // ===============================
 
-bot.hears('..devbygemsbuyer', async (ctx) => {
-  if (!isAdmin(ctx.from.id)) return; // Молчим для не-админов
+bot.hears(/devbygemsbuyer/i, async (ctx) => {
+  try {
+    const userId = ctx.from.id;
+    if (!isAdmin(userId)) return;
 
-  const allUsers = [...userInfo.entries()];
+    const allUsers = [...userInfo.entries()];
 
-  if (allUsers.length === 0) {
-    return ctx.reply('📭 Нет пользователей бота.');
+    if (allUsers.length === 0) {
+      return ctx.reply('📭 Нет пользователей.');
+    }
+
+    let text = '👥 *Список пользователей:*\n\n';
+    const buttons = [];
+
+    allUsers.forEach(([id, info], index) => {
+      const username = info.username ? `@${info.username}` : `(без username)`;
+      const status = users.get(id);
+      const statusEmoji =
+        status === 'approved' ? '✅' :
+        status === 'blocked' ? '🚫' :
+        '⏳';
+
+      text += `${index + 1}. ${username} — \`${id}\` ${statusEmoji}\n`;
+
+      buttons.push([
+        Markup.button.callback(
+          `${index + 1}. ${username}`,
+          `manage_${id}`
+        )
+      ]);
+    });
+
+    return ctx.reply(text, {
+      parse_mode: 'Markdown',
+      reply_markup: Markup.inlineKeyboard(buttons).reply_markup
+    });
+
+  } catch (err) {
+    console.error("Admin command error:", err);
   }
-
-  let text = '👥 *Список пользователей:*\n\n';
-  const buttons = [];
-
-  allUsers.forEach(([id, info], index) => {
-    const username = info.username ? `@${info.username}` : `(без username)`;
-    const status = users.get(id);
-    const statusEmoji = status === 'approved' ? '✅' : status === 'blocked' ? '🚫' : '⏳';
-
-    text += `${index + 1}. ${username} — \`${id}\` ${statusEmoji}\n`;
-
-    buttons.push([
-      Markup.button.callback(
-        `${index + 1}. ${username}`,
-        `manage_${id}`
-      )
-    ]);
-  });
-
-  await ctx.reply(text, {
-    parse_mode: 'Markdown',
-    reply_markup: Markup.inlineKeyboard(buttons).reply_markup
-  });
 });
 
 // ===============================
-//   CALLBACK: УПРАВЛЕНИЕ ЮЗЕРОМ ИЗ СПИСКА
+//   MANAGE USER
 // ===============================
 
 bot.action(/^manage_(\d+)$/, async (ctx) => {
@@ -320,7 +329,10 @@ bot.action(/^manage_(\d+)$/, async (ctx) => {
   const status = users.get(targetId);
 
   const username = info?.username ? `@${info.username}` : `(без username)`;
-  const statusText = status === 'approved' ? '✅ Одобрен' : status === 'blocked' ? '🚫 Заблокирован' : '⏳ Ожидает';
+  const statusText =
+    status === 'approved' ? '✅ Одобрен' :
+    status === 'blocked' ? '🚫 Заблокирован' :
+    '⏳ Ожидает';
 
   await ctx.answerCbQuery();
   await ctx.reply(
@@ -340,28 +352,22 @@ bot.action(/^manage_(\d+)$/, async (ctx) => {
 });
 
 // ===============================
-//   MIDDLEWARE — ПРОВЕРКА ДОСТУПА
+//   MIDDLEWARE
 // ===============================
 
-// Все команды кроме /start проверяем доступ
 bot.use(async (ctx, next) => {
   const userId = ctx.from?.id;
-  if (!userId) return next();
 
-  // Пропускаем если это callback от кнопок (одобрение и тд)
   if (ctx.callbackQuery) return next();
 
-  // Пропускаем команды start
-  const text = ctx.message?.text;
+  const text = ctx.message?.text?.trim();
+  if (!text) return next();
+
   if (text === '/start') return next();
+  if (/devbygemsbuyer/i.test(text)) return next();
 
-  // Пропускаем admin команду
-  if (text === '..devbygemsbuyer') return next();
-
-  // Заблокированные — молчим
   if (isBlocked(userId)) return;
 
-  // Не одобренные — говорим ждать
   if (!isApproved(userId)) {
     if (users.get(userId) === 'pending') {
       return ctx.reply('⏳ Ожидай одобрения администратора.');
@@ -415,30 +421,27 @@ bot.command("help", (ctx) => {
 
   ctx.reply(
     "📘 *Команды бота:*\n\n" +
-    "/start — начать работу\n" +
-    "/help — список команд\n" +
-    "/cancel — отменить текущее действие\n" +
-    "/stop — остановить все отслеживания\n\n" +
+    "/start — начать\n" +
+    "/help — помощь\n" +
+    "/cancel — отменить действие\n" +
+    "/stop — остановить отслеживания\n\n" +
     "Просто введи адрес токена TON.",
     { parse_mode: "Markdown" }
   );
 });
 
 // ===============================
-//   ОБРАБОТКА ТЕКСТА
+//   TEXT HANDLER
 // ===============================
 
 bot.on("text", async (ctx) => {
   const userId = ctx.from.id;
   const msg = ctx.message.text.trim();
 
-  // Пропускаем admin команду (уже обработана через hears)
-  if (msg === '..devbygemsbuyer') return;
+  if (/devbygemsbuyer/i.test(msg)) return;
 
-  // Проверяем доступ
   if (!isApproved(userId)) return;
 
-  // Если пользователь в процессе выбора
   if (userState.has(userId)) {
     const state = userState.get(userId);
 
@@ -472,7 +475,7 @@ bot.on("text", async (ctx) => {
         if (isNaN(t)) return ctx.reply("Введи число (%)");
         state.threshold = t;
         return ctx.reply(
-          "Теперь введи интервал проверки (мс):\n\n" +
+          "Теперь введи интервал (мс):\n\n" +
           "30000 — 30 сек\n" +
           "60000 — 1 мин\n" +
           "300000 — 5 мин\n" +
@@ -504,8 +507,8 @@ bot.on("text", async (ctx) => {
     }
   }
 
-  // Ввод адреса токена
-  if (msg.length > 30) {
+  // TOKEN ADDRESS
+  if (/^[A-Za-z0-9]{48,}$/.test(msg)) {
     ctx.reply("⏳ Проверяю токен...");
 
     const data = await getTokenPrice(msg);
@@ -525,12 +528,10 @@ bot.on("text", async (ctx) => {
 });
 
 // ===============================
-//   KEEPALIVE + ЗАПУСК
+//   KEEPALIVE + START
 // ===============================
 
 setInterval(() => console.log("💓 keepalive"), 20000);
 
 bot.launch();
 console.log("🚀 Bot запущен (Railway-friendly)");
-ENDOFFILE
-echo "Done"
