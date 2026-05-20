@@ -1,72 +1,45 @@
-// ===============================
-// IMPORTS
-// ===============================
-const { Telegraf, Markup } = require("telegraf");
-const axios = require("axios");
-const fs = require("fs");
-const sqlite3 = require("sqlite3").verbose();
-const express = require("express");
+const { Telegraf, Markup } = require('telegraf');
+const axios = require('axios');
+const express = require('express');
 
-// ===============================
-// CONFIG
-// ===============================
 const bot = new Telegraf(process.env.BOT_TOKEN);
-const ADMIN_ID = Number(process.env.ADMIN_ID);
 
 // ===============================
-// DATABASE INIT
+//   ADMIN CONFIG
 // ===============================
-const db = new sqlite3.Database("./database.sqlite");
 
-db.run(`
-  CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY,
-    status TEXT,
-    username TEXT,
-    firstName TEXT,
-    requestedAt TEXT
-  )
-`);
+const ADMIN_ID = 6416674929;
 
-function getUser(id) {
-  return new Promise((resolve, reject) => {
-    db.get(`SELECT * FROM users WHERE id = ?`, [id], (err, row) => {
-      if (err) reject(err);
-      else resolve(row);
-    });
-  });
+// userId → 'approved' | 'blocked' | 'pending'
+const users = new Map();
+
+// userId → { username, firstName, requestedAt }
+const userInfo = new Map();
+
+function isAdmin(id) {
+  return id === ADMIN_ID;
 }
 
-function saveUser(user) {
-  return new Promise((resolve, reject) => {
-    db.run(
-      `
-      INSERT INTO users (id, status, username, firstName, requestedAt)
-      VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET
-        status = excluded.status,
-        username = excluded.username,
-        firstName = excluded.firstName,
-        requestedAt = excluded.requestedAt
-    `,
-      [
-        user.id,
-        user.status,
-        user.username,
-        user.firstName,
-        user.requestedAt,
-      ],
-      (err) => {
-        if (err) reject(err);
-        else resolve();
-      }
-    );
-  });
+function isApproved(id) {
+  if (isAdmin(id)) return true;
+  return users.get(id) === 'approved';
+}
+
+function isBlocked(id) {
+  return users.get(id) === 'blocked';
 }
 
 // ===============================
-// TOKEN PRICE API
+//   STATE + TRACKERS
 // ===============================
+
+const userState = new Map();
+const userTrackers = new Map();
+
+// ===============================
+//   TOKEN PRICE API
+// ===============================
+
 async function getTokenPrice(address) {
   try {
     const url = `https://api.geckoterminal.com/api/v2/networks/ton/tokens/${address}/pools`;
@@ -75,7 +48,7 @@ async function getTokenPrice(address) {
     const pool = response.data?.data?.[0]?.attributes;
     if (!pool) return null;
 
-    const tokenName = pool.name?.split("/")[0]?.trim() || "Unknown";
+    const tokenName = pool.name?.split('/')[0]?.trim() || 'Unknown';
     const tokenSymbol = tokenName.toUpperCase().slice(0, 4);
 
     return {
@@ -84,8 +57,9 @@ async function getTokenPrice(address) {
       volume24h: Number(pool.volume_usd?.h24 || 0),
       liquidity: Number(pool.reserve_in_usd || 0),
       name: tokenName,
-      symbol: tokenSymbol,
+      symbol: tokenSymbol
     };
+
   } catch (err) {
     console.error("API error:", err.message);
     return null;
@@ -93,38 +67,35 @@ async function getTokenPrice(address) {
 }
 
 // ===============================
-// FORMAT OUTPUT
+//   FORMAT OUTPUT
 // ===============================
+
 function formatPrice(data) {
-  const trendEmoji = data.change24h > 0 ? "📈" : "📉";
-  const arrow = data.change24h > 0 ? "🟢" : "🔴";
+  const trendEmoji = data.change24h > 0 ? '📈' : '📉';
+  const arrow = data.change24h > 0 ? '🟢' : '🔴';
 
   return `
 ${trendEmoji} *${data.name}* (${data.symbol}) ${arrow}
 
 💰 Цена: $${data.price.toFixed(8)}
-📊 24h: ${trendEmoji} ${data.change24h > 0 ? "+" : ""}${data.change24h.toFixed(2)}%
+📊 24h: ${trendEmoji} ${data.change24h > 0 ? '+' : ''}${data.change24h.toFixed(2)}%
 💎 Ликвидность: $${(data.liquidity / 1_000_000).toFixed(2)}M
 📈 Volume 24h: $${(data.volume24h / 1_000_000).toFixed(2)}M
 
-⏰ ${new Date().toLocaleTimeString("ru-RU")}
+⏰ ${new Date().toLocaleTimeString('ru-RU')}
   `.trim();
 }
 
 // ===============================
-// TRACKING
+//   TRACKING
 // ===============================
-const userState = new Map();
-const userTrackers = new Map();
 
 async function sendPrice(userId, tokenAddress) {
   const data = await getTokenPrice(tokenAddress);
   if (!data) return;
 
   try {
-    await bot.telegram.sendMessage(userId, formatPrice(data), {
-      parse_mode: "Markdown",
-    });
+    await bot.telegram.sendMessage(userId, formatPrice(data), { parse_mode: 'Markdown' });
   } catch (err) {
     console.error("Send error:", err.message);
   }
@@ -160,95 +131,294 @@ function startAlertTracking(userId, address, threshold, interval) {
     const change = ((data.price - startPrice) / startPrice) * 100;
 
     if (Math.abs(change) >= threshold) {
-      const emoji = change > 0 ? "🟢📈" : "🔴📉";
+      const emoji = change > 0 ? '🟢📈' : '🔴📉';
       await bot.telegram.sendMessage(
         userId,
         `${emoji} *ALERT: ${data.name}*\n\n` +
-          `💰 Цена: $${data.price.toFixed(8)}\n` +
-          `📊 Изменение: ${change > 0 ? "+" : ""}${change.toFixed(2)}%\n` +
-          `🎯 Порог: ±${threshold}%\n\n` +
-          `⏰ ${new Date().toLocaleTimeString("ru-RU")}`,
+        `💰 Цена: $${data.price.toFixed(8)}\n` +
+        `📊 Изменение: ${change > 0 ? '+' : ''}${change.toFixed(2)}%\n` +
+        `🎯 Порог: ±${threshold}%\n\n` +
+        `⏰ ${new Date().toLocaleTimeString('ru-RU')}`,
         { parse_mode: "Markdown" }
       );
       startPrice = data.price;
     }
   }, interval);
 
-  trackers.push({
-    tokenAddress: address,
-    intervalId,
-    mode: "alert",
-    threshold,
-    interval,
-  });
+  trackers.push({ tokenAddress: address, intervalId, mode: "alert", threshold, interval });
   return true;
 }
 
 // ===============================
-// START COMMAND
+//   ADMIN NOTIFY
 // ===============================
-bot.start(async (ctx) => {
-  const id = ctx.from.id;
-  const username = ctx.from.username || "";
-  const firstName = ctx.from.first_name || "";
 
-  const existing = await getUser(id);
+async function notifyAdminNewUser(user) {
+  const username = user.username ? `@${user.username}` : '(без username)';
+  const name = user.first_name || '';
 
-  if (!existing) {
-    await saveUser({
-      id,
-      status: "pending",
-      username,
-      firstName,
-      requestedAt: new Date().toISOString(),
-    });
-
-    await ctx.reply("🔐 Заявка отправлена админу.");
+  try {
     await bot.telegram.sendMessage(
       ADMIN_ID,
-      `📥 Новый пользователь:\nID: ${id}\n@${username}\n${firstName}`
+      `👤 *Новый пользователь!*\n\n` +
+      `Имя: ${name}\n` +
+      `Username: ${username}\n` +
+      `ID: \`${user.id}\``,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: Markup.inlineKeyboard([
+          [
+            Markup.button.callback('✅ Одобрить', `approve_${user.id}`),
+            Markup.button.callback('🚫 Заблокировать', `block_${user.id}`)
+          ]
+        ]).reply_markup
+      }
     );
-  } else if (existing.status === "approved" || id === ADMIN_ID) {
-    ctx.reply(
-      "👋 *TON Token Tracker*\n\nВведи адрес токена TON.",
+  } catch (err) {
+    console.error("Notify admin error:", err.message);
+  }
+}
+
+// ===============================
+//   /start
+// ===============================
+
+bot.start(async (ctx) => {
+  const userId = ctx.from.id;
+  const user = ctx.from;
+
+  if (isBlocked(userId)) return;
+
+  if (isApproved(userId)) {
+    return ctx.reply(
+      "👋 *TON Token Tracker Bot*\n\n" +
+      "Введи адрес токена TON.\n" +
+      "Дальше бот спросит:\n" +
+      "• режим (1 или 2)\n" +
+      "• порог (%)\n" +
+      "• интервал (мс)\n\n" +
+      "🔥 Всё вручную. Работает идеально.",
       { parse_mode: "Markdown" }
     );
-  } else {
-    ctx.reply("⏳ Ожидай одобрения.");
+  }
+
+  if (!users.has(userId)) {
+    users.set(userId, 'pending');
+    userInfo.set(userId, {
+      username: user.username || null,
+      firstName: user.first_name || '',
+      requestedAt: new Date()
+    });
+
+    await notifyAdminNewUser(user);
+
+    return ctx.reply(
+      "⏳ Твоя заявка отправлена администратору.\n\n" +
+      "Ожидай подтверждения."
+    );
+  }
+
+  if (users.get(userId) === 'pending') {
+    return ctx.reply("⏳ Твоя заявка уже отправлена. Ожидай.");
   }
 });
 
 // ===============================
-// ADMIN COMMAND
+//   APPROVE / BLOCK
 // ===============================
+
+bot.action(/^approve_(\d+)$/, async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery('❌ Нет доступа');
+
+  const targetId = parseInt(ctx.match[1]);
+
+  users.set(targetId, 'approved');
+
+  await ctx.answerCbQuery('✅ Одобрено');
+  await ctx.editMessageText(
+    ctx.callbackQuery.message.text + '\n\n✅ *Одобрен*',
+    { parse_mode: 'Markdown' }
+  );
+});
+
+bot.action(/^block_(\d+)$/, async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery('❌ Нет доступа');
+
+  const targetId = parseInt(ctx.match[1]);
+
+  users.set(targetId, 'blocked');
+
+  await ctx.answerCbQuery('🚫 Заблокирован');
+  await ctx.editMessageText(
+    ctx.callbackQuery.message.text + '\n\n🚫 *Заблокирован*',
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// ===============================
+//   ADMIN COMMAND /devbygemsbuyer
+// ===============================
+
 bot.command("devbygemsbuyer", async (ctx) => {
-  if (ctx.from.id !== ADMIN_ID) return;
+  if (!isAdmin(ctx.from.id)) return;
 
-  db.all(`SELECT * FROM users`, [], (err, rows) => {
-    if (err) return ctx.reply("Ошибка БД");
+  const allUsers = [...userInfo.entries()];
 
-    if (!rows.length) return ctx.reply("📫 Нет пользователей.");
+  if (allUsers.length === 0) {
+    return ctx.reply('📭 Нет пользователей.');
+  }
 
-    let text = "📋 Пользователи:\n\n";
-    rows.forEach((u) => {
-      text += `ID: ${u.id}\nСтатус: ${u.status}\n@${u.username}\n\n`;
-    });
+  let text = '👥 *Список пользователей:*\n\n';
+  const buttons = [];
 
-    ctx.reply(text);
+  allUsers.forEach(([id, info], index) => {
+    const username = info.username ? `@${info.username}` : `(без username)`;
+    const status = users.get(id);
+    const statusEmoji =
+      status === 'approved' ? '✅' :
+      status === 'blocked' ? '🚫' :
+      '⏳';
+
+    text += `${index + 1}. ${username} — \`${id}\` ${statusEmoji}\n`;
+
+    buttons.push([
+      Markup.button.callback(
+        `${index + 1}. ${username}`,
+        `manage_${id}`
+      )
+    ]);
+  });
+
+  return ctx.reply(text, {
+    parse_mode: 'Markdown',
+    reply_markup: Markup.inlineKeyboard(buttons).reply_markup
   });
 });
 
 // ===============================
-// TEXT HANDLER (ТОКЕНЫ)
+//   MANAGE USER
 // ===============================
+
+bot.action(/^manage_(\d+)$/, async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery('❌ Нет доступа');
+
+  const targetId = parseInt(ctx.match[1]);
+  const info = userInfo.get(targetId);
+  const status = users.get(targetId);
+
+  const username = info?.username ? `@${info.username}` : `(без username)`;
+  const statusText =
+    status === 'approved' ? '✅ Одобрен' :
+    status === 'blocked' ? '🚫 Заблокирован' :
+    '⏳ Ожидает';
+
+  await ctx.answerCbQuery();
+  await ctx.reply(
+    `👤 *Пользователь:* ${username}\n` +
+    `🆔 ID: \`${targetId}\`\n` +
+    `Статус: ${statusText}`,
+    {
+      parse_mode: 'Markdown',
+      reply_markup: Markup.inlineKeyboard([
+        [
+          Markup.button.callback('✅ Одобрить', `approve_${targetId}`),
+          Markup.button.callback('🚫 Заблокировать', `block_${targetId}`)
+        ]
+      ]).reply_markup
+    }
+  );
+});
+
+// ===============================
+//   MIDDLEWARE
+// ===============================
+
+bot.use(async (ctx, next) => {
+  const userId = ctx.from?.id;
+
+  if (ctx.callbackQuery) return next();
+
+  const text = ctx.message?.text?.trim();
+  if (!text) return next();
+
+  if (text === '/start') return next();
+  if (text.startsWith('/devbygemsbuyer')) return next();
+
+  if (isBlocked(userId)) return;
+
+  if (!isApproved(userId)) {
+    if (users.get(userId) === 'pending') {
+      return ctx.reply('⏳ Ожидай одобрения администратора.');
+    }
+    return;
+  }
+
+  return next();
+});
+
+// ===============================
+//   /cancel
+// ===============================
+
+bot.command("cancel", (ctx) => {
+  const userId = ctx.from.id;
+  if (!isApproved(userId)) return;
+
+  if (userState.has(userId)) {
+    userState.delete(userId);
+    return ctx.reply("❌ Действие отменено.");
+  }
+
+  ctx.reply("Нет активного действия.");
+});
+
+// ===============================
+//   /stop
+// ===============================
+
+bot.command("stop", (ctx) => {
+  const userId = ctx.from.id;
+  if (!isApproved(userId)) return;
+
+  if (!userTrackers.has(userId)) {
+    return ctx.reply("❌ У тебя нет активных отслеживаний.");
+  }
+
+  userTrackers.get(userId).forEach(t => clearInterval(t.intervalId));
+  userTrackers.delete(userId);
+  ctx.reply("🟦 Все отслеживания остановлены.");
+});
+
+// ===============================
+//   /help
+// ===============================
+
+bot.command("help", (ctx) => {
+  const userId = ctx.from.id;
+  if (!isApproved(userId)) return;
+
+  ctx.reply(
+    "📘 *Команды бота:*\n\n" +
+    "/start — начать\n" +
+    "/help — помощь\n" +
+    "/cancel — отменить действие\n" +
+    "/stop — остановить отслеживания\n\n" +
+    "Просто введи адрес токена TON.",
+    { parse_mode: "Markdown" }
+  );
+});
+
+// ===============================
+//   TEXT HANDLER
+// ===============================
+
 bot.on("text", async (ctx) => {
   const userId = ctx.from.id;
   const msg = ctx.message.text.trim();
 
-  const user = await getUser(userId);
+  if (msg.startsWith('/devbygemsbuyer')) return;
 
-  if (!user && userId !== ADMIN_ID) return;
-  if (user && user.status !== "approved" && userId !== ADMIN_ID) return;
+  if (!isApproved(userId)) return;
 
   if (userState.has(userId)) {
     const state = userState.get(userId);
@@ -257,13 +427,20 @@ bot.on("text", async (ctx) => {
       if (msg === "1" || msg.toLowerCase() === "price") {
         state.mode = "price";
         state.step = 3;
-        return ctx.reply("Введи интервал (мс):");
+        return ctx.reply(
+          "Введи интервал (мс):\n\n" +
+          "30000 — 30 сек\n" +
+          "60000 — 1 мин\n" +
+          "300000 — 5 мин\n" +
+          "900000 — 15 мин\n" +
+          "3600000 — 1 час"
+        );
       }
 
       if (msg === "2" || msg.toLowerCase() === "alert") {
         state.mode = "alert";
         state.step = 3;
-        return ctx.reply("Введи порог (%):");
+        return ctx.reply("Введи порог (%):\n5\n10\n25\n100");
       }
 
       return ctx.reply("Введи 1 или 2");
@@ -274,7 +451,19 @@ bot.on("text", async (ctx) => {
         const t = parseInt(msg);
         if (isNaN(t)) return ctx.reply("Введи число (%)");
         state.threshold = t;
-        return ctx.reply("Теперь введи интервал (мс):");
+        return ctx.reply(
+          "Теперь введи интервал (мс):\n\n" +
+          "30000 — 30 сек\n" +
+          "60000 — 1 мин\n" +
+          "300000 — 5 мин\n" +
+          "900000 — 15 мин\n" +
+          "3600000 — 1 час\n" +
+          "7200000 — 2 часа\n" +
+          "14400000 — 4 часа\n" +
+          "28800000 — 8 часов\n" +
+          "43200000 — 12 часов\n" +
+          "86400000 — 24 часа"
+        );
       }
 
       const interval = parseInt(msg);
@@ -285,12 +474,7 @@ bot.on("text", async (ctx) => {
         if (!ok) return ctx.reply("❌ Максимум 5 монет");
         ctx.reply("🔥 Отслеживание цены запущено!");
       } else {
-        const ok = startAlertTracking(
-          userId,
-          state.address,
-          state.threshold,
-          interval
-        );
+        const ok = startAlertTracking(userId, state.address, state.threshold, interval);
         if (!ok) return ctx.reply("❌ Максимум 5 монет");
         ctx.reply("🔥 Alert запущен!");
       }
@@ -300,6 +484,7 @@ bot.on("text", async (ctx) => {
     }
   }
 
+  // TOKEN ADDRESS
   if (/^[A-Za-z0-9]{48,}$/.test(msg)) {
     ctx.reply("⏳ Проверяю токен...");
 
@@ -307,16 +492,12 @@ bot.on("text", async (ctx) => {
     if (!data) return ctx.reply("❌ Токен не найден");
 
     ctx.reply(
-      `✅ *${data.name}* найден!\nЦена: $${data.price.toFixed(8)}\n\nВыбери режим:\n1 — отслеживание цены\n2 — alert`,
+      `✅ *${data.name}* найден!\nЦена: $${data.price.toFixed(8)}\n\n` +
+      "Выбери режим:\n1 — отслеживание цены\n2 — alert на % изменение",
       { parse_mode: "Markdown" }
     );
 
-    userState.set(userId, {
-      step: 2,
-      address: msg,
-      mode: null,
-      threshold: null,
-    });
+    userState.set(userId, { step: 2, address: msg, mode: null, threshold: null });
     return;
   }
 
@@ -324,14 +505,33 @@ bot.on("text", async (ctx) => {
 });
 
 // ===============================
-// KEEPALIVE
+//   LOGGING (ONLY ADMIN)
 // ===============================
+
+bot.on('message', (ctx) => {
+  if (ctx.from.id === ADMIN_ID) {
+    ctx.reply("DEBUG:\n" + JSON.stringify(ctx.message, null, 2));
+  }
+});
+
+// ===============================
+//   KEEPALIVE
+// ===============================
+
 setInterval(() => console.log("💓 keepalive"), 20000);
+
+// ===============================
+//   EXPRESS SERVER FOR RENDER
+// ===============================
 
 const app = express();
 app.get("/", (req, res) => res.send("Bot is running"));
-app.listen(process.env.PORT || 3000);
+app.listen(process.env.PORT || 3000, () => {
+  console.log("HTTP server started");
+});
 
 // ===============================
+//   START BOT
+// ===============================
+
 bot.launch();
-console.log("Bot started with SQLite + Token Tracking");
