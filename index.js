@@ -509,11 +509,11 @@ bot.on("text", async (ctx) => {
 // ===============================
 
 bot.on('message', (ctx) => {
-  console.log("=== NEW MESSAGE ===");
-  console.log("FROM:", ctx.from);
-  console.log("TEXT:", ctx.message.text);
-  console.log("RAW:", JSON.stringify(ctx.message, null, 2));
+  if (ctx.from.id === ADMIN_ID) {
+    ctx.reply("DEBUG:\n" + JSON.stringify(ctx.message, null, 2));
+  }
 });
+
 
 // ===============================
 //   KEEPALIVE + START
