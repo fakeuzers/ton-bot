@@ -1,6 +1,6 @@
 const { Telegraf, Markup } = require('telegraf');
 const axios = require('axios');
-const express = require('express'); // <— добавлено для Render
+const express = require('express');
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
@@ -505,7 +505,7 @@ bot.on("text", async (ctx) => {
 });
 
 // ===============================
-//   LOGGING (POWERFUL)
+//   LOGGING (ONLY ADMIN)
 // ===============================
 
 bot.on('message', (ctx) => {
@@ -515,7 +515,7 @@ bot.on('message', (ctx) => {
 });
 
 // ===============================
-//   KEEPALIVE + START
+//   KEEPALIVE
 // ===============================
 
 setInterval(() => console.log("💓 keepalive"), 20000);
