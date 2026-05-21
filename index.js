@@ -1,4 +1,4 @@
- cat > /mnt/user-data/outputs/index.js << 'ENDOFFILE'
+cat > /mnt/user-data/outputs/index.js << 'ENDOFFILE'
 const { Telegraf, Markup } = require('telegraf');
 const axios = require('axios');
 const express = require('express');
