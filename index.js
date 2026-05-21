@@ -34,30 +34,93 @@ function escapeMarkdown(text) {
 // ===============================
 
 async function searchToken(query) {
+
   try {
-    // Если это адрес
-    if (query.length > 30) {
+
+    // ADDRESS
+    if (
+      query.startsWith('EQ') ||
+      query.startsWith('UQ')
+    ) {
       return query;
     }
 
-    const url = `https://api.geckoterminal.com/api/v2/search/pools?query=${encodeURIComponent(query)}`;
+    // SEARCH TOKENS
+    const url =
+      `https://api.geckoterminal.com/api/v2/search/pools?query=${encodeURIComponent(query)}`;
 
     const response = await axios.get(url, {
-      timeout: 10000
+      timeout: 15000,
+      headers: {
+        accept: 'application/json'
+      }
     });
 
-    const pools = response.data?.data || [];
+    const pools = response.data?.data;
 
-    const tonPool = pools.find(
-      p => p.relationships?.network?.data?.id === 'ton'
+    if (!Array.isArray(pools)) {
+      console.log("No pools array");
+      return null;
+    }
+
+    // DEBUG
+    console.log(
+      "SEARCH RESULTS:",
+      pools.length
     );
 
-    if (!tonPool) return null;
+    // TON ONLY
+    const tonPools = pools.filter(pool => {
 
-    return tonPool.relationships?.base_token?.data?.id || null;
+      const networkId =
+        pool.relationships?.network?.data?.id;
+
+      return networkId === 'ton';
+    });
+
+    console.log(
+      "TON POOLS:",
+      tonPools.length
+    );
+
+    if (!tonPools.length) {
+      return null;
+    }
+
+    // SORT BY LIQUIDITY
+    tonPools.sort((a, b) => {
+
+      const liqA =
+        Number(a.attributes?.reserve_in_usd || 0);
+
+      const liqB =
+        Number(b.attributes?.reserve_in_usd || 0);
+
+      return liqB - liqA;
+    });
+
+    const bestPool = tonPools[0];
+
+    const tokenAddress =
+      bestPool.relationships
+        ?.base_token
+        ?.data
+        ?.id;
+
+    console.log(
+      "FOUND TOKEN:",
+      tokenAddress
+    );
+
+    return tokenAddress || null;
 
   } catch (err) {
-    console.log("Search error:", err.message);
+
+    console.log(
+      "Search error:",
+      err.response?.data || err.message
+    );
+
     return null;
   }
 }
