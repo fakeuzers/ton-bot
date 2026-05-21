@@ -1,269 +1,187 @@
-const { Telegraf } = require('telegraf');
+ cat > /mnt/user-data/outputs/index.js << 'ENDOFFILE'
+const { Telegraf, Markup } = require('telegraf');
 const axios = require('axios');
 const express = require('express');
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
 // ===============================
-// CONFIG
+//   CONFIG
 // ===============================
 
-const MIN_INTERVAL = 5000;
+const ADMIN_ID = 6416674929;
 const MAX_TRACKERS = 5;
 
-const userState = new Map();
-const userTrackers = new Map();
-
 // ===============================
-// HELPERS
+//   ХРАНИЛИЩА
 // ===============================
 
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-function safeNumber(num) {
-  return Number(num || 0);
-}
-
-function escapeMarkdown(text) {
-  return String(text).replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
-}
+const userState = new Map();    // userId → состояние диалога
+const userTrackers = new Map(); // userId → [tracker]
+const users = new Map();        // userId → 'approved' | 'blocked' | 'pending'
+const userInfo = new Map();     // userId → { username, firstName }
 
 // ===============================
-// SEARCH TOKEN
+//   ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+// ===============================
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+function isAdmin(id) { return id === ADMIN_ID; }
+function isApproved(id) { return isAdmin(id) || users.get(id) === 'approved'; }
+function isBlocked(id) { return users.get(id) === 'blocked'; }
+
+// ===============================
+//   ПОИСК ТОКЕНА
 // ===============================
 
 async function searchToken(query) {
-
   try {
-
-    // ADDRESS
-    if (
-      query.startsWith('EQ') ||
-      query.startsWith('UQ')
-    ) {
+    // Если адрес TON — возвращаем сразу
+    if (query.startsWith('EQ') || query.startsWith('UQ')) {
       return query;
     }
 
-    // SEARCH BY NAME
-    const url =
-      `https://api.geckoterminal.com/api/v2/search/pools?query=${encodeURIComponent(query)}`;
-
+    // Поиск по названию через GeckoTerminal
+    const url = `https://api.geckoterminal.com/api/v2/search/pools?query=${encodeURIComponent(query)}&network=ton`;
     const response = await axios.get(url, {
       timeout: 15000,
-      headers: {
-        accept: 'application/json'
-      }
+      headers: { accept: 'application/json' }
     });
 
     const pools = response.data?.data;
+    if (!Array.isArray(pools) || pools.length === 0) return null;
 
-    if (!Array.isArray(pools)) {
-      return null;
-    }
-
-    // TON ONLY
+    // Фильтруем только TON сеть
     const tonPools = pools.filter(pool => {
-
-  const networkId =
-    pool.relationships?.network?.data?.id || '';
-
-  console.log(
-    'NETWORK ID:',
-    networkId
-  );
-
-  return networkId
-    .toLowerCase()
-    .includes('ton');
-});
-
-    if (!tonPools.length) {
-      return null;
-    }
-
-    // BEST LIQUIDITY
-    tonPools.sort((a, b) => {
-
-      const liqA =
-        Number(a.attributes?.reserve_in_usd || 0);
-
-      const liqB =
-        Number(b.attributes?.reserve_in_usd || 0);
-
-      return liqB - liqA;
+      const networkId = pool.relationships?.network?.data?.id || '';
+      return networkId.toLowerCase().includes('ton');
     });
 
-    const bestPool = tonPools[0];
+    if (!tonPools.length) return null;
 
-    const tokenAddress =
-      bestPool.relationships
-        ?.base_token
-        ?.data
-        ?.id;
-
-    return tokenAddress || null;
-
-  } catch (err) {
-
-    console.log(
-      'Search error:',
-      err.response?.data || err.message
+    // Берём пул с наибольшей ликвидностью
+    tonPools.sort((a, b) =>
+      Number(b.attributes?.reserve_in_usd || 0) - Number(a.attributes?.reserve_in_usd || 0)
     );
 
+    // Извлекаем адрес base_token (формат "ton/ADDRESS")
+    const tokenId = tonPools[0].relationships?.base_token?.data?.id || '';
+    const address = tokenId.includes('/') ? tokenId.split('/')[1] : tokenId;
+
+    return address || null;
+
+  } catch (err) {
+    console.error('Search error:', err.response?.data || err.message);
     return null;
   }
 }
 
 // ===============================
-// GET TOKEN DATA
+//   ПОЛУЧЕНИЕ ЦЕНЫ ТОКЕНА
 // ===============================
 
 async function getTokenPrice(address, retry = 0) {
-
   try {
-
-    const url =
-      `https://api.geckoterminal.com/api/v2/networks/ton/tokens/${address}/pools`;
-
+    const url = `https://api.geckoterminal.com/api/v2/networks/ton/tokens/${address}/pools?page=1`;
     const response = await axios.get(url, {
-      timeout: 15000
+      timeout: 15000,
+      headers: { accept: 'application/json' }
     });
 
-    const pool =
-      response.data?.data?.[0]?.attributes;
+    const pools = response.data?.data;
+    if (!Array.isArray(pools) || pools.length === 0) return null;
 
-    if (!pool) {
-      return null;
-    }
+    // Берём пул с наибольшей ликвидностью
+    const sorted = pools.sort((a, b) =>
+      Number(b.attributes?.reserve_in_usd || 0) - Number(a.attributes?.reserve_in_usd || 0)
+    );
 
-    const tokenName =
-      pool.name?.split('/')[0]?.trim() || 'Unknown';
+    const pool = sorted[0]?.attributes;
+    if (!pool) return null;
+
+    // Название токена из имени пула (формат "TOKEN / USDT")
+    const tokenName = pool.name?.split('/')[0]?.trim() || 'Unknown';
+
+    const price = Number(pool.base_token_price_usd || pool.token_price_usd || 0);
 
     return {
-      price: safeNumber(pool.token_price_usd),
-      change24h: safeNumber(pool.price_change_percentage?.h24),
-      volume24h: safeNumber(pool.volume_usd?.h24),
-      liquidity: safeNumber(pool.reserve_in_usd),
+      price,
+      change24h: Number(pool.price_change_percentage?.h24 || 0),
+      volume24h: Number(pool.volume_usd?.h24 || 0),
+      liquidity: Number(pool.reserve_in_usd || 0),
       name: tokenName,
       symbol: tokenName.toUpperCase().slice(0, 6)
     };
 
   } catch (err) {
-
     if (err.response?.status === 429) {
-
-      console.log('429 cooldown');
-
+      console.log('Rate limit, waiting...');
       await sleep(10000);
-
-      if (retry < 3) {
-        return getTokenPrice(address, retry + 1);
-      }
+      if (retry < 3) return getTokenPrice(address, retry + 1);
     }
-
-    console.log(
-      'API error:',
-      err.response?.data || err.message
-    );
-
+    console.error('Price error:', err.response?.data || err.message);
     return null;
   }
 }
 
 // ===============================
-// FORMAT
+//   ФОРМАТИРОВАНИЕ СООБЩЕНИЯ
 // ===============================
 
 function formatPrice(data) {
+  const trend = data.change24h >= 0 ? '📈' : '📉';
+  const dot = data.change24h >= 0 ? '🟢' : '🔴';
 
-  const trend =
-    data.change24h >= 0 ? '📈' : '📉';
-
-  return `
-${trend} *${escapeMarkdown(data.name)}*
-
-💰 Цена:
-\`$${data.price.toFixed(8)}\`
-
-📊 24ч:
-${data.change24h >= 0 ? '🟢' : '🔴'} ${data.change24h.toFixed(2)}%
-
-💎 Ликвидность:
-$${(data.liquidity / 1_000_000).toFixed(2)}M
-
-📈 Объем:
-$${(data.volume24h / 1_000_000).toFixed(2)}M
-
-⏰ ${new Date().toLocaleTimeString('ru-RU')}
-`.trim();
+  return (
+    `${trend} *${data.name}* (${data.symbol})\n\n` +
+    `💰 Цена: \`$${data.price.toFixed(8)}\`\n` +
+    `${dot} 24h: ${data.change24h >= 0 ? '+' : ''}${data.change24h.toFixed(2)}%\n` +
+    `💎 Ликвидность: $${(data.liquidity / 1_000_000).toFixed(2)}M\n` +
+    `📊 Объём: $${(data.volume24h / 1_000_000).toFixed(2)}M\n\n` +
+    `⏰ ${new Date().toLocaleTimeString('ru-RU')}`
+  );
 }
 
 // ===============================
-// TRACKING LOOP
+//   ЦИКЛ ТРЕКИНГА
 // ===============================
 
 async function startTrackingLoop(tracker) {
-
   while (tracker.active) {
-
     try {
-
-      const data =
-        await getTokenPrice(tracker.address);
+      const data = await getTokenPrice(tracker.address);
 
       if (data) {
-
-        // PRICE MODE
         if (tracker.mode === 'price') {
-
-          await bot.telegram.sendMessage(
-            tracker.userId,
-            formatPrice(data),
-            {
-              parse_mode: 'MarkdownV2'
-            }
-          );
+          await bot.telegram.sendMessage(tracker.userId, formatPrice(data), {
+            parse_mode: 'Markdown'
+          });
         }
 
-        // ALERT MODE
         if (tracker.mode === 'alert') {
-
           if (tracker.startPrice === null) {
-
             tracker.startPrice = data.price;
-
           } else {
-
-            const change =
-              ((data.price - tracker.startPrice)
-                / tracker.startPrice) * 100;
-
-            if (
-              Math.abs(change) >= tracker.threshold
-            ) {
-
+            const change = ((data.price - tracker.startPrice) / tracker.startPrice) * 100;
+            if (Math.abs(change) >= tracker.threshold) {
+              const emoji = change >= 0 ? '🟢📈' : '🔴📉';
               await bot.telegram.sendMessage(
                 tracker.userId,
-                `🚨 *ALERT*\n\n${escapeMarkdown(data.name)} изменился на ${change.toFixed(2)}%`,
-                {
-                  parse_mode: 'MarkdownV2'
-                }
+                `🚨 *ALERT: ${data.name}*\n\n` +
+                `${emoji} Изменение: ${change >= 0 ? '+' : ''}${change.toFixed(2)}%\n` +
+                `💰 Цена: \`$${data.price.toFixed(8)}\`\n` +
+                `🎯 Порог: ±${tracker.threshold}%\n\n` +
+                `⏰ ${new Date().toLocaleTimeString('ru-RU')}`,
+                { parse_mode: 'Markdown' }
               );
-
               tracker.startPrice = data.price;
             }
           }
         }
       }
-
     } catch (err) {
-
-      console.log(
-        'Tracking error:',
-        err.message
-      );
+      console.error('Tracking error:', err.message);
     }
 
     await sleep(tracker.interval);
@@ -271,310 +189,363 @@ async function startTrackingLoop(tracker) {
 }
 
 // ===============================
-// COMMANDS
+//   УВЕДОМЛЕНИЕ АДМИНУ О НОВОМ ЮЗЕРЕ
 // ===============================
 
-bot.start((ctx) => {
+async function notifyAdmin(user) {
+  const username = user.username ? `@${user.username}` : '(нет username)';
+  try {
+    await bot.telegram.sendMessage(
+      ADMIN_ID,
+      `👤 *Новый пользователь!*\n\nИмя: ${user.first_name || ''}\nUsername: ${username}\nID: \`${user.id}\``,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: Markup.inlineKeyboard([
+          [
+            Markup.button.callback('✅ Одобрить', `approve_${user.id}`),
+            Markup.button.callback('🚫 Заблокировать', `block_${user.id}`)
+          ]
+        ]).reply_markup
+      }
+    );
+  } catch (err) {
+    console.error('Notify admin error:', err.message);
+  }
+}
 
-  ctx.reply(
-`🚀 TON Tracker Bot
+// ===============================
+//   /start
+// ===============================
 
-Можно искать:
-• по адресу
-• по названию
+bot.start(async (ctx) => {
+  const userId = ctx.from.id;
 
-Примеры:
-BTC
-DOGS
-PEPE
-NOT
+  if (isBlocked(userId)) return;
 
-Команды:
-/help
-/stop
-/status`
+  if (isApproved(userId)) {
+    return ctx.reply(
+      '🚀 *TON Tracker Bot*\n\n' +
+      'Введи адрес токена или название:\n\n' +
+      'Примеры:\n' +
+      '`EQBZ_cafPyDr5KUTs0aNxh0ZTDhkpEZONmLJA2SNGlLm4Cko`\n' +
+      '`DOGS`\n`NOT`\n`PEPE`\n\n' +
+      'Команды: /stop /status /help',
+      { parse_mode: 'Markdown' }
+    );
+  }
+
+  if (!users.has(userId)) {
+    users.set(userId, 'pending');
+    userInfo.set(userId, {
+      username: ctx.from.username || null,
+      firstName: ctx.from.first_name || ''
+    });
+    await notifyAdmin(ctx.from);
+    return ctx.reply('⏳ Заявка отправлена администратору. Ожидай одобрения!');
+  }
+
+  if (users.get(userId) === 'pending') {
+    return ctx.reply('⏳ Твоя заявка ещё рассматривается. Ожидай!');
+  }
+});
+
+// ===============================
+//   ОДОБРЕНИЕ / БЛОКИРОВКА
+// ===============================
+
+bot.action(/^approve_(\d+)$/, async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery('❌ Нет доступа');
+  const targetId = parseInt(ctx.match[1]);
+  users.set(targetId, 'approved');
+  await ctx.answerCbQuery('✅ Одобрен');
+  await ctx.editMessageText(ctx.callbackQuery.message.text + '\n\n✅ Одобрен', { parse_mode: 'Markdown' });
+  try {
+    await bot.telegram.sendMessage(targetId, '✅ Тебя одобрили! Теперь можешь пользоваться ботом.\n\nВведи адрес токена или название:');
+  } catch (e) {}
+});
+
+bot.action(/^block_(\d+)$/, async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery('❌ Нет доступа');
+  const targetId = parseInt(ctx.match[1]);
+  users.set(targetId, 'blocked');
+  await ctx.answerCbQuery('🚫 Заблокирован');
+  await ctx.editMessageText(ctx.callbackQuery.message.text + '\n\n🚫 Заблокирован', { parse_mode: 'Markdown' });
+});
+
+// ===============================
+//   УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ (только для управления через список)
+// ===============================
+
+bot.action(/^manage_(\d+)$/, async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery('❌ Нет доступа');
+  const targetId = parseInt(ctx.match[1]);
+  const info = userInfo.get(targetId);
+  const status = users.get(targetId);
+  const username = info?.username ? `@${info.username}` : '(нет username)';
+  const statusText = status === 'approved' ? '✅ Одобрен' : status === 'blocked' ? '🚫 Заблокирован' : '⏳ Ожидает';
+
+  await ctx.answerCbQuery();
+  await ctx.reply(
+    `👤 *${username}*\nID: \`${targetId}\`\nСтатус: ${statusText}`,
+    {
+      parse_mode: 'Markdown',
+      reply_markup: Markup.inlineKeyboard([
+        [
+          Markup.button.callback('✅ Одобрить', `approve_${targetId}`),
+          Markup.button.callback('🚫 Заблокировать', `block_${targetId}`)
+        ]
+      ]).reply_markup
+    }
   );
 });
 
+// ===============================
+//   MIDDLEWARE: ПРОВЕРКА ДОСТУПА
+// ===============================
+
+bot.use(async (ctx, next) => {
+  const userId = ctx.from?.id;
+  if (!userId) return next();
+  if (ctx.callbackQuery) return next();
+
+  const text = ctx.message?.text?.trim();
+
+  // Всегда пропускаем эти
+  if (text === '/start' || text === '..devbygemsbuyer') return next();
+
+  if (isBlocked(userId)) return;
+
+  if (!isApproved(userId)) {
+    if (users.get(userId) === 'pending') {
+      return ctx.reply('⏳ Ожидай одобрения администратора.');
+    }
+    return;
+  }
+
+  return next();
+});
+
+// ===============================
+//   СКРЫТАЯ ADMIN КОМАНДА
+// ===============================
+
+bot.hears('..devbygemsbuyer', async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return;
+
+  const all = [...userInfo.entries()];
+  if (all.length === 0) return ctx.reply('📭 Нет пользователей.');
+
+  let text = '👥 *Пользователи бота:*\n\n';
+  const buttons = [];
+
+  all.forEach(([id, info], i) => {
+    const username = info.username ? `@${info.username}` : '(нет username)';
+    const status = users.get(id);
+    const emoji = status === 'approved' ? '✅' : status === 'blocked' ? '🚫' : '⏳';
+    text += `${i + 1}. ${username} — \`${id}\` ${emoji}\n`;
+    buttons.push([Markup.button.callback(`${i + 1}. ${username} ${emoji}`, `manage_${id}`)]);
+  });
+
+  await ctx.reply(text, {
+    parse_mode: 'Markdown',
+    reply_markup: Markup.inlineKeyboard(buttons).reply_markup
+  });
+});
+
+// ===============================
+//   КОМАНДЫ
+// ===============================
+
 bot.command('help', (ctx) => {
-
   ctx.reply(
-`📘 Команды:
-
-/start
-/help
-/stop
-/status
-/cancel`
+    '📘 *Команды:*\n\n' +
+    '/start — начать\n' +
+    '/stop — остановить все трекеры\n' +
+    '/status — активные трекеры\n' +
+    '/cancel — отменить текущее действие\n' +
+    '/help — помощь',
+    { parse_mode: 'Markdown' }
   );
 });
 
 bot.command('cancel', (ctx) => {
-
   userState.delete(ctx.from.id);
-
-  ctx.reply('❌ Отменено');
+  ctx.reply('❌ Отменено. Введи адрес или название токена:');
 });
 
 bot.command('status', (ctx) => {
+  const trackers = userTrackers.get(ctx.from.id);
+  if (!trackers || trackers.length === 0) return ctx.reply('❌ Нет активных трекеров');
 
-  const trackers =
-    userTrackers.get(ctx.from.id);
-
-  if (!trackers || trackers.length === 0) {
-    return ctx.reply(
-      '❌ Нет активных трекеров'
-    );
-  }
-
-  let text = '📡 Активные трекеры:\n\n';
-
+  let text = '📡 *Активные трекеры:*\n\n';
   trackers.forEach((t, i) => {
-
-    text +=
-      `${i + 1}. ${t.name} | ${t.mode} | ${t.interval}ms\n`;
+    text += `${i + 1}. *${t.name}* | ${t.mode} | ${(t.interval / 1000).toFixed(0)}с\n`;
   });
 
-  ctx.reply(text);
+  ctx.reply(text, { parse_mode: 'Markdown' });
 });
 
 bot.command('stop', (ctx) => {
-
-  const trackers =
-    userTrackers.get(ctx.from.id);
-
-  if (!trackers) {
-    return ctx.reply(
-      '❌ Нет активных трекеров'
-    );
-  }
-
-  trackers.forEach(t => {
-    t.active = false;
-  });
-
+  const trackers = userTrackers.get(ctx.from.id);
+  if (!trackers) return ctx.reply('❌ Нет активных трекеров');
+  trackers.forEach(t => { t.active = false; });
   userTrackers.delete(ctx.from.id);
-
   ctx.reply('⛔ Все трекеры остановлены');
 });
 
 // ===============================
-// TEXT HANDLER
+//   ОБРАБОТКА ТЕКСТА
 // ===============================
 
 bot.on('text', async (ctx) => {
-
   const userId = ctx.from.id;
   const msg = ctx.message.text.trim();
 
-  // STEP FLOW
+  if (msg === '..devbygemsbuyer') return;
+
+  // ШАГ 2 — выбор режима
   if (userState.has(userId)) {
+    const state = userState.get(userId);
 
-    const state =
-      userState.get(userId);
-
-    // MODE
     if (state.step === 2) {
-
       if (msg === '1') {
-
         state.mode = 'price';
         state.step = 3;
-
         return ctx.reply(
-          '⏰ Введи интервал в мс\n\nМинимум: 5000'
+          '⏰ Введи интервал:\n\n' +
+          '`5000` — 5 сек\n' +
+          '`30000` — 30 сек\n' +
+          '`60000` — 1 мин\n' +
+          '`300000` — 5 мин\n' +
+          '`900000` — 15 мин\n' +
+          '`1800000` — 30 мин\n' +
+          '`3600000` — 1 час',
+          { parse_mode: 'Markdown' }
         );
       }
-
       if (msg === '2') {
-
         state.mode = 'alert';
         state.step = 3;
-
-        return ctx.reply(
-          '📊 Введи порог (%)'
-        );
+        return ctx.reply('📊 Введи порог (%):\n`5`\n`10`\n`25`\n`50`\n`100`', { parse_mode: 'Markdown' });
       }
-
       return ctx.reply('Введи 1 или 2');
     }
 
-    // THRESHOLD
-    if (
-      state.step === 3 &&
-      state.mode === 'alert' &&
-      !state.threshold
-    ) {
-
-      const threshold =
-        parseFloat(msg);
-
-      if (isNaN(threshold)) {
-        return ctx.reply('Введи число');
-      }
-
-      state.threshold = threshold;
+    // ШАГ 3 — порог (только для alert)
+    if (state.step === 3 && state.mode === 'alert' && !state.threshold) {
+      const t = parseFloat(msg);
+      if (isNaN(t) || t <= 0) return ctx.reply('Введи число больше 0');
+      state.threshold = t;
       state.step = 4;
-
       return ctx.reply(
-        '⏰ Введи интервал в мс'
+        '⏰ Введи интервал проверки:\n\n' +
+        '`30000` — 30 сек\n' +
+        '`60000` — 1 мин\n' +
+        '`300000` — 5 мин\n' +
+        '`900000` — 15 мин\n' +
+        '`3600000` — 1 час\n' +
+        '`7200000` — 2 часа\n' +
+        '`14400000` — 4 часа\n' +
+        '`28800000` — 8 часов\n' +
+        '`43200000` — 12 часов\n' +
+        '`86400000` — 24 часа',
+        { parse_mode: 'Markdown' }
       );
     }
 
-    // INTERVAL
-    if (
-      (state.step === 3 &&
-        state.mode === 'price')
-      ||
-      state.step === 4
-    ) {
+    // ШАГ 3/4 — интервал
+    if ((state.step === 3 && state.mode === 'price') || state.step === 4) {
+      let interval = parseInt(msg);
+      if (isNaN(interval)) return ctx.reply('Введи число');
+      if (interval < 5000) interval = 5000;
 
-      let interval =
-        parseInt(msg);
+      if (!userTrackers.has(userId)) userTrackers.set(userId, []);
+      const trackers = userTrackers.get(userId);
 
-      if (isNaN(interval)) {
-        return ctx.reply('Введи число');
-      }
-
-      if (interval < MIN_INTERVAL) {
-        interval = MIN_INTERVAL;
-      }
-
-      if (!userTrackers.has(userId)) {
-        userTrackers.set(userId, []);
-      }
-
-      const trackers =
-        userTrackers.get(userId);
-
-      if (
-        trackers.length >= MAX_TRACKERS
-      ) {
-        return ctx.reply(
-          '❌ Максимум 5 трекеров'
-        );
-      }
+      if (trackers.length >= MAX_TRACKERS) return ctx.reply('❌ Максимум 5 трекеров');
 
       const tracker = {
         userId,
         address: state.address,
+        name: state.name,
         mode: state.mode,
-        threshold: state.threshold,
+        threshold: state.threshold || 0,
         interval,
         active: true,
-        startPrice: null,
-        name: state.name
+        startPrice: null
       };
 
       trackers.push(tracker);
-
       startTrackingLoop(tracker);
 
       ctx.reply(
-`✅ Трекинг запущен
-
-Монета: ${state.name}
-Режим: ${state.mode}
-Интервал: ${interval}ms`
+        `✅ *Трекинг запущен!*\n\n` +
+        `Монета: *${state.name}*\n` +
+        `Режим: ${state.mode === 'price' ? '📊 Цена' : '🚨 Alert'}\n` +
+        `Интервал: ${(interval / 1000).toFixed(0)} сек\n` +
+        (state.mode === 'alert' ? `Порог: ±${state.threshold}%\n` : '') +
+        `\nДля остановки: /stop`,
+        { parse_mode: 'Markdown' }
       );
 
       userState.delete(userId);
-
       return;
     }
   }
 
-  // SEARCH TOKEN
+  // ПОИСК ТОКЕНА
   await ctx.reply('🔍 Ищу токен...');
 
-  const tokenAddress =
-    await searchToken(msg);
+  const tokenAddress = await searchToken(msg);
+  if (!tokenAddress) return ctx.reply('❌ Токен не найден. Проверь адрес или название.');
 
-  if (!tokenAddress) {
-    return ctx.reply(
-      '❌ Токен не найден'
-    );
-  }
-
-  const data =
-    await getTokenPrice(tokenAddress);
-
-  if (!data) {
-    return ctx.reply(
-      '❌ Не удалось получить цену'
-    );
-  }
+  const data = await getTokenPrice(tokenAddress);
+  if (!data || data.price === 0) return ctx.reply('❌ Не удалось получить цену. Возможно нет ликвидности.');
 
   userState.set(userId, {
     step: 2,
     address: tokenAddress,
-    threshold: null,
+    name: data.name,
     mode: null,
-    name: data.name
+    threshold: null
   });
 
   ctx.reply(
-`✅ Найден: ${data.name}
-
-💰 Цена:
-$${data.price.toFixed(8)}
-
-Выбери режим:
-
-1 — Price Tracking
-2 — Alert Tracking`
+    `✅ *${data.name}* найден!\n\n` +
+    `💰 Цена: \`$${data.price.toFixed(8)}\`\n` +
+    `📊 24h: ${data.change24h >= 0 ? '+' : ''}${data.change24h.toFixed(2)}%\n` +
+    `💎 Ликвидность: $${(data.liquidity / 1_000_000).toFixed(2)}M\n\n` +
+    `Выбери режим:\n` +
+    `*1* — Price Tracking (цена по расписанию)\n` +
+    `*2* — Alert Tracking (уведомление при % изменении)`,
+    { parse_mode: 'Markdown' }
   );
 });
 
 // ===============================
-// ERROR HANDLERS
+//   ОБРАБОТКА ОШИБОК
 // ===============================
 
-process.on('unhandledRejection', (err) => {
-  console.log('Unhandled Rejection:', err);
-});
-
-process.on('uncaughtException', (err) => {
-  console.log('Uncaught Exception:', err);
-});
+process.on('unhandledRejection', err => console.error('Rejection:', err));
+process.on('uncaughtException', err => console.error('Exception:', err));
 
 // ===============================
-// WEB SERVER
+//   ВЕБ-СЕРВЕР (для Render)
 // ===============================
 
 const app = express();
-
-app.get('/', (req, res) => {
-  res.send('Bot is running');
-});
-
-const PORT =
-  process.env.PORT || 3000;
-
-app.listen(PORT, () => {
-  console.log(
-    `🌐 Server started on ${PORT}`
-  );
-});
+app.get('/', (_, res) => res.send('Bot is running ✅'));
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`🌐 Server on port ${PORT}`));
 
 // ===============================
-// START BOT
+//   ЗАПУСК
 // ===============================
 
 bot.launch();
+console.log('🚀 Bot started!');
 
-console.log(
-  '🚀 Bot started successfully'
-);
-
-// ===============================
-// STOP HANDLERS
-// ===============================
-
-process.once('SIGINT', () => {
-  bot.stop('SIGINT');
-});
-
-process.once('SIGTERM', () => {
-  bot.stop('SIGTERM');
-});
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));
+ENDOFFILE
+echo "Done"
