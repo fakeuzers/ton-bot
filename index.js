@@ -1,4 +1,3 @@
-cat > /mnt/user-data/outputs/index.js << 'ENDOFFILE'
 const { Telegraf, Markup } = require('telegraf');
 const axios = require('axios');
 const express = require('express');
@@ -547,5 +546,3 @@ console.log('🚀 Bot started!');
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
-ENDOFFILE
-echo "Done"
