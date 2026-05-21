@@ -66,11 +66,18 @@ async function searchToken(query) {
     // TON ONLY
     const tonPools = pools.filter(pool => {
 
-      const networkId =
-        pool.relationships?.network?.data?.id;
+  const networkId =
+    pool.relationships?.network?.data?.id || '';
 
-      return networkId === 'ton';
-    });
+  console.log(
+    'NETWORK ID:',
+    networkId
+  );
+
+  return networkId
+    .toLowerCase()
+    .includes('ton');
+});
 
     if (!tonPools.length) {
       return null;
