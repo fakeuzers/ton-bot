@@ -1,5 +1,6 @@
 const { Telegraf } = require('telegraf');
 const axios = require('axios');
+const express = require('express');
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
@@ -45,7 +46,7 @@ async function searchToken(query) {
       return query;
     }
 
-    // SEARCH TOKENS
+    // SEARCH BY NAME
     const url =
       `https://api.geckoterminal.com/api/v2/search/pools?query=${encodeURIComponent(query)}`;
 
@@ -59,15 +60,8 @@ async function searchToken(query) {
     const pools = response.data?.data;
 
     if (!Array.isArray(pools)) {
-      console.log("No pools array");
       return null;
     }
-
-    // DEBUG
-    console.log(
-      "SEARCH RESULTS:",
-      pools.length
-    );
 
     // TON ONLY
     const tonPools = pools.filter(pool => {
@@ -78,16 +72,11 @@ async function searchToken(query) {
       return networkId === 'ton';
     });
 
-    console.log(
-      "TON POOLS:",
-      tonPools.length
-    );
-
     if (!tonPools.length) {
       return null;
     }
 
-    // SORT BY LIQUIDITY
+    // BEST LIQUIDITY
     tonPools.sort((a, b) => {
 
       const liqA =
@@ -107,17 +96,12 @@ async function searchToken(query) {
         ?.data
         ?.id;
 
-    console.log(
-      "FOUND TOKEN:",
-      tokenAddress
-    );
-
     return tokenAddress || null;
 
   } catch (err) {
 
     console.log(
-      "Search error:",
+      'Search error:',
       err.response?.data || err.message
     );
 
@@ -130,16 +114,22 @@ async function searchToken(query) {
 // ===============================
 
 async function getTokenPrice(address, retry = 0) {
+
   try {
-    const url = `https://api.geckoterminal.com/api/v2/networks/ton/tokens/${address}/pools`;
+
+    const url =
+      `https://api.geckoterminal.com/api/v2/networks/ton/tokens/${address}/pools`;
 
     const response = await axios.get(url, {
       timeout: 15000
     });
 
-    const pool = response.data?.data?.[0]?.attributes;
+    const pool =
+      response.data?.data?.[0]?.attributes;
 
-    if (!pool) return null;
+    if (!pool) {
+      return null;
+    }
 
     const tokenName =
       pool.name?.split('/')[0]?.trim() || 'Unknown';
@@ -155,9 +145,9 @@ async function getTokenPrice(address, retry = 0) {
 
   } catch (err) {
 
-    // RATE LIMIT
     if (err.response?.status === 429) {
-      console.log("429 received. Cooling down...");
+
+      console.log('429 cooldown');
 
       await sleep(10000);
 
@@ -166,7 +156,11 @@ async function getTokenPrice(address, retry = 0) {
       }
     }
 
-    console.log("API error:", err.message);
+    console.log(
+      'API error:',
+      err.response?.data || err.message
+    );
+
     return null;
   }
 }
@@ -176,12 +170,15 @@ async function getTokenPrice(address, retry = 0) {
 // ===============================
 
 function formatPrice(data) {
-  const trend = data.change24h >= 0 ? '📈' : '📉';
+
+  const trend =
+    data.change24h >= 0 ? '📈' : '📉';
 
   return `
 ${trend} *${escapeMarkdown(data.name)}*
 
-💰 Цена: \`$${data.price.toFixed(8)}\`
+💰 Цена:
+\`$${data.price.toFixed(8)}\`
 
 📊 24ч:
 ${data.change24h >= 0 ? '🟢' : '🔴'} ${data.change24h.toFixed(2)}%
@@ -189,7 +186,7 @@ ${data.change24h >= 0 ? '🟢' : '🔴'} ${data.change24h.toFixed(2)}%
 💎 Ликвидность:
 $${(data.liquidity / 1_000_000).toFixed(2)}M
 
-📈 Объем 24ч:
+📈 Объем:
 $${(data.volume24h / 1_000_000).toFixed(2)}M
 
 ⏰ ${new Date().toLocaleTimeString('ru-RU')}
@@ -197,7 +194,7 @@ $${(data.volume24h / 1_000_000).toFixed(2)}M
 }
 
 // ===============================
-// SAFE TRACKING LOOP
+// TRACKING LOOP
 // ===============================
 
 async function startTrackingLoop(tracker) {
@@ -206,7 +203,8 @@ async function startTrackingLoop(tracker) {
 
     try {
 
-      const data = await getTokenPrice(tracker.address);
+      const data =
+        await getTokenPrice(tracker.address);
 
       if (data) {
 
@@ -220,20 +218,24 @@ async function startTrackingLoop(tracker) {
               parse_mode: 'MarkdownV2'
             }
           );
-
         }
 
         // ALERT MODE
         if (tracker.mode === 'alert') {
 
           if (tracker.startPrice === null) {
+
             tracker.startPrice = data.price;
+
           } else {
 
             const change =
-              ((data.price - tracker.startPrice) / tracker.startPrice) * 100;
+              ((data.price - tracker.startPrice)
+                / tracker.startPrice) * 100;
 
-            if (Math.abs(change) >= tracker.threshold) {
+            if (
+              Math.abs(change) >= tracker.threshold
+            ) {
 
               await bot.telegram.sendMessage(
                 tracker.userId,
@@ -250,7 +252,11 @@ async function startTrackingLoop(tracker) {
       }
 
     } catch (err) {
-      console.log("Tracking error:", err.message);
+
+      console.log(
+        'Tracking error:',
+        err.message
+      );
     }
 
     await sleep(tracker.interval);
@@ -264,7 +270,7 @@ async function startTrackingLoop(tracker) {
 bot.start((ctx) => {
 
   ctx.reply(
-    `🚀 TON Tracker Bot
+`🚀 TON Tracker Bot
 
 Можно искать:
 • по адресу
@@ -286,13 +292,13 @@ NOT
 bot.command('help', (ctx) => {
 
   ctx.reply(
-    `📘 Команды:
+`📘 Команды:
 
-/start — запуск
-/help — помощь
-/stop — остановить всё
-/status — активные трекеры
-/cancel — отмена`
+/start
+/help
+/stop
+/status
+/cancel`
   );
 });
 
@@ -300,21 +306,26 @@ bot.command('cancel', (ctx) => {
 
   userState.delete(ctx.from.id);
 
-  ctx.reply('❌ Действие отменено');
+  ctx.reply('❌ Отменено');
 });
 
 bot.command('status', (ctx) => {
 
-  const trackers = userTrackers.get(ctx.from.id);
+  const trackers =
+    userTrackers.get(ctx.from.id);
 
   if (!trackers || trackers.length === 0) {
-    return ctx.reply('❌ Нет активных отслеживаний');
+    return ctx.reply(
+      '❌ Нет активных трекеров'
+    );
   }
 
   let text = '📡 Активные трекеры:\n\n';
 
   trackers.forEach((t, i) => {
-    text += `${i + 1}. ${t.name || 'TOKEN'} | ${t.mode} | ${t.interval}ms\n`;
+
+    text +=
+      `${i + 1}. ${t.name} | ${t.mode} | ${t.interval}ms\n`;
   });
 
   ctx.reply(text);
@@ -322,10 +333,13 @@ bot.command('status', (ctx) => {
 
 bot.command('stop', (ctx) => {
 
-  const trackers = userTrackers.get(ctx.from.id);
+  const trackers =
+    userTrackers.get(ctx.from.id);
 
   if (!trackers) {
-    return ctx.reply('❌ Нет активных трекеров');
+    return ctx.reply(
+      '❌ Нет активных трекеров'
+    );
   }
 
   trackers.forEach(t => {
@@ -346,23 +360,22 @@ bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const msg = ctx.message.text.trim();
 
-  // ===========================
   // STEP FLOW
-  // ===========================
-
   if (userState.has(userId)) {
 
-    const state = userState.get(userId);
+    const state =
+      userState.get(userId);
 
     // MODE
     if (state.step === 2) {
 
       if (msg === '1') {
+
         state.mode = 'price';
         state.step = 3;
 
         return ctx.reply(
-          '⏰ Введи интервал в мс\n\nМинимум: 5000\nПример: 10000'
+          '⏰ Введи интервал в мс\n\nМинимум: 5000'
         );
       }
 
@@ -372,7 +385,7 @@ bot.on('text', async (ctx) => {
         state.step = 3;
 
         return ctx.reply(
-          '📊 Введи порог изменения (%)'
+          '📊 Введи порог (%)'
         );
       }
 
@@ -380,9 +393,14 @@ bot.on('text', async (ctx) => {
     }
 
     // THRESHOLD
-    if (state.step === 3 && state.mode === 'alert' && !state.threshold) {
+    if (
+      state.step === 3 &&
+      state.mode === 'alert' &&
+      !state.threshold
+    ) {
 
-      const threshold = parseFloat(msg);
+      const threshold =
+        parseFloat(msg);
 
       if (isNaN(threshold)) {
         return ctx.reply('Введи число');
@@ -392,17 +410,20 @@ bot.on('text', async (ctx) => {
       state.step = 4;
 
       return ctx.reply(
-        '⏰ Введи интервал в мс\n\nМинимум: 5000'
+        '⏰ Введи интервал в мс'
       );
     }
 
     // INTERVAL
     if (
-      (state.step === 3 && state.mode === 'price') ||
+      (state.step === 3 &&
+        state.mode === 'price')
+      ||
       state.step === 4
     ) {
 
-      let interval = parseInt(msg);
+      let interval =
+        parseInt(msg);
 
       if (isNaN(interval)) {
         return ctx.reply('Введи число');
@@ -416,10 +437,15 @@ bot.on('text', async (ctx) => {
         userTrackers.set(userId, []);
       }
 
-      const trackers = userTrackers.get(userId);
+      const trackers =
+        userTrackers.get(userId);
 
-      if (trackers.length >= MAX_TRACKERS) {
-        return ctx.reply('❌ Максимум 5 трекеров');
+      if (
+        trackers.length >= MAX_TRACKERS
+      ) {
+        return ctx.reply(
+          '❌ Максимум 5 трекеров'
+        );
       }
 
       const tracker = {
@@ -438,7 +464,7 @@ bot.on('text', async (ctx) => {
       startTrackingLoop(tracker);
 
       ctx.reply(
-        `✅ Трекинг запущен
+`✅ Трекинг запущен
 
 Монета: ${state.name}
 Режим: ${state.mode}
@@ -451,22 +477,25 @@ bot.on('text', async (ctx) => {
     }
   }
 
-  // ===========================
   // SEARCH TOKEN
-  // ===========================
-
   await ctx.reply('🔍 Ищу токен...');
 
-  const tokenAddress = await searchToken(msg);
+  const tokenAddress =
+    await searchToken(msg);
 
   if (!tokenAddress) {
-    return ctx.reply('❌ Токен не найден');
+    return ctx.reply(
+      '❌ Токен не найден'
+    );
   }
 
-  const data = await getTokenPrice(tokenAddress);
+  const data =
+    await getTokenPrice(tokenAddress);
 
   if (!data) {
-    return ctx.reply('❌ Не удалось получить цену');
+    return ctx.reply(
+      '❌ Не удалось получить цену'
+    );
   }
 
   userState.set(userId, {
@@ -478,7 +507,7 @@ bot.on('text', async (ctx) => {
   });
 
   ctx.reply(
-    `✅ Найден: ${data.name}
+`✅ Найден: ${data.name}
 
 💰 Цена:
 $${data.price.toFixed(8)}
@@ -503,18 +532,42 @@ process.on('uncaughtException', (err) => {
 });
 
 // ===============================
+// WEB SERVER
+// ===============================
+
+const app = express();
+
+app.get('/', (req, res) => {
+  res.send('Bot is running');
+});
+
+const PORT =
+  process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+  console.log(
+    `🌐 Server started on ${PORT}`
+  );
+});
+
+// ===============================
 // START BOT
 // ===============================
 
 bot.launch();
-const express = require("express");
-const app = express();
 
-app.get("/", (req, res) => {
-  res.send("Bot is running");
+console.log(
+  '🚀 Bot started successfully'
+);
+
+// ===============================
+// STOP HANDLERS
+// ===============================
+
+process.once('SIGINT', () => {
+  bot.stop('SIGINT');
 });
 
-const PORT = process.env.PORT || 3000;
-
-app.listen(PORT, () => {
-  console.log(`🌐 Web server started on port ${PORT}`);
+process.once('SIGTERM', () => {
+  bot.stop('SIGTERM');
+});
