@@ -1,43 +1,17 @@
-const { Telegraf, Markup } = require('telegraf');
+const { Telegraf } = require('telegraf');
 const axios = require('axios');
-const express = require('express');
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
 // ===============================
-//   ADMIN CONFIG
+//   ХРАНИЛИЩЕ СОСТОЯНИЙ ПОЛЬЗОВАТЕЛЕЙ
 // ===============================
 
-const ADMIN_ID = 6416674929;
-
-// userId → 'approved' | 'blocked' | 'pending'
-const users = new Map();
-
-// userId → { username, firstName, requestedAt }
-const userInfo = new Map();
-
-function isAdmin(id) {
-  return id === ADMIN_ID;
-}
-
-function isApproved(id) {
-  if (isAdmin(id)) return true;
-  return users.get(id) === 'approved';
-}
-
-function isBlocked(id) {
-  return users.get(id) === 'blocked';
-}
+const userState = new Map(); 
+// userId → { step, address, mode, threshold }
 
 // ===============================
-//   STATE + TRACKERS
-// ===============================
-
-const userState = new Map();
-const userTrackers = new Map();
-
-// ===============================
-//   TOKEN PRICE API
+//   ПОЛУЧЕНИЕ ДАННЫХ О ТОН-ТОКЕНЕ
 // ===============================
 
 async function getTokenPrice(address) {
@@ -60,14 +34,14 @@ async function getTokenPrice(address) {
       symbol: tokenSymbol
     };
 
-  } catch (err) {
-    console.error("API error:", err.message);
+  } catch (error) {
+    console.error("API error:", error.message);
     return null;
   }
 }
 
 // ===============================
-//   FORMAT OUTPUT
+//   ФОРМАТИРОВАНИЕ ВЫВОДА
 // ===============================
 
 function formatPrice(data) {
@@ -86,9 +60,13 @@ ${trendEmoji} *${data.name}* (${data.symbol}) ${arrow}
   `.trim();
 }
 
+
 // ===============================
-//   TRACKING
+//   ТРЕКИНГ
 // ===============================
+
+const userTrackers = new Map(); 
+// userId → [{ tokenAddress, intervalId, mode, threshold }]
 
 async function sendPrice(userId, tokenAddress) {
   const data = await getTokenPrice(tokenAddress);
@@ -104,10 +82,13 @@ async function sendPrice(userId, tokenAddress) {
 function startPriceTracking(userId, address, interval) {
   if (!userTrackers.has(userId)) userTrackers.set(userId, []);
   const trackers = userTrackers.get(userId);
+
   if (trackers.length >= 5) return false;
 
   sendPrice(userId, address);
+
   const intervalId = setInterval(() => sendPrice(userId, address), interval);
+
   trackers.push({ tokenAddress: address, intervalId, mode: "price", interval });
   return true;
 }
@@ -115,6 +96,7 @@ function startPriceTracking(userId, address, interval) {
 function startAlertTracking(userId, address, threshold, interval) {
   if (!userTrackers.has(userId)) userTrackers.set(userId, []);
   const trackers = userTrackers.get(userId);
+
   if (trackers.length >= 5) return false;
 
   let startPrice = null;
@@ -131,14 +113,9 @@ function startAlertTracking(userId, address, threshold, interval) {
     const change = ((data.price - startPrice) / startPrice) * 100;
 
     if (Math.abs(change) >= threshold) {
-      const emoji = change > 0 ? '🟢📈' : '🔴📉';
       await bot.telegram.sendMessage(
         userId,
-        `${emoji} *ALERT: ${data.name}*\n\n` +
-        `💰 Цена: $${data.price.toFixed(8)}\n` +
-        `📊 Изменение: ${change > 0 ? '+' : ''}${change.toFixed(2)}%\n` +
-        `🎯 Порог: ±${threshold}%\n\n` +
-        `⏰ ${new Date().toLocaleTimeString('ru-RU')}`,
+        `📢 ALERT: ${data.name}\nЦена изменилась на ${change.toFixed(2)}%`,
         { parse_mode: "Markdown" }
       );
       startPrice = data.price;
@@ -150,235 +127,43 @@ function startAlertTracking(userId, address, threshold, interval) {
 }
 
 // ===============================
-//   ADMIN NOTIFY
-// ===============================
-
-async function notifyAdminNewUser(user) {
-  const username = user.username ? `@${user.username}` : '(без username)';
-  const name = user.first_name || '';
-
-  try {
-    await bot.telegram.sendMessage(
-      ADMIN_ID,
-      `👤 *Новый пользователь!*\n\n` +
-      `Имя: ${name}\n` +
-      `Username: ${username}\n` +
-      `ID: \`${user.id}\``,
-      {
-        parse_mode: 'Markdown',
-        reply_markup: Markup.inlineKeyboard([
-          [
-            Markup.button.callback('✅ Одобрить', `approve_${user.id}`),
-            Markup.button.callback('🚫 Заблокировать', `block_${user.id}`)
-          ]
-        ]).reply_markup
-      }
-    );
-  } catch (err) {
-    console.error("Notify admin error:", err.message);
-  }
-}
-
-// ===============================
 //   /start
 // ===============================
 
-bot.start(async (ctx) => {
-  const userId = ctx.from.id;
-  const user = ctx.from;
-
-  if (isBlocked(userId)) return;
-
-  if (isApproved(userId)) {
-    return ctx.reply(
-      "👋 *TON Token Tracker Bot*\n\n" +
-      "Введи адрес токена TON.\n" +
-      "Дальше бот спросит:\n" +
-      "• режим (1 или 2)\n" +
-      "• порог (%)\n" +
-      "• интервал (мс)\n\n" +
-      "🔥 Всё вручную. Работает идеально.",
-      { parse_mode: "Markdown" }
-    );
-  }
-
-  if (!users.has(userId)) {
-    users.set(userId, 'pending');
-    userInfo.set(userId, {
-      username: user.username || null,
-      firstName: user.first_name || '',
-      requestedAt: new Date()
-    });
-
-    await notifyAdminNewUser(user);
-
-    return ctx.reply(
-      "⏳ Твоя заявка отправлена администратору.\n\n" +
-      "Ожидай подтверждения."
-    );
-  }
-
-  if (users.get(userId) === 'pending') {
-    return ctx.reply("⏳ Твоя заявка уже отправлена. Ожидай.");
-  }
-});
-
-// ===============================
-//   APPROVE / BLOCK
-// ===============================
-
-bot.action(/^approve_(\d+)$/, async (ctx) => {
-  if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery('❌ Нет доступа');
-
-  const targetId = parseInt(ctx.match[1]);
-
-  users.set(targetId, 'approved');
-
-  await ctx.answerCbQuery('✅ Одобрено');
-  await ctx.editMessageText(
-    ctx.callbackQuery.message.text + '\n\n✅ *Одобрен*',
-    { parse_mode: 'Markdown' }
-  );
-});
-
-bot.action(/^block_(\d+)$/, async (ctx) => {
-  if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery('❌ Нет доступа');
-
-  const targetId = parseInt(ctx.match[1]);
-
-  users.set(targetId, 'blocked');
-
-  await ctx.answerCbQuery('🚫 Заблокирован');
-  await ctx.editMessageText(
-    ctx.callbackQuery.message.text + '\n\n🚫 *Заблокирован*',
-    { parse_mode: 'Markdown' }
+bot.start((ctx) => {
+  ctx.reply(
+    "👋 *TON Token Tracker Bot*\n\n" +
+    "Просто введи адрес токена TON.\n" +
+    "Дальше бот сам будет спрашивать:\n" +
+    "• режим (1 или 2)\n" +
+    "• порог (%)\n" +
+    "• интервал (мс)\n\n" +
+    "🔥 Всё вручную. Работает идеально.",
+    { parse_mode: "Markdown" }
   );
 });
 
 // ===============================
-//   ADMIN COMMAND /devbygemsbuyer
-// ===============================
-
-bot.command("devbygemsbuyer", async (ctx) => {
-  if (!isAdmin(ctx.from.id)) return;
-
-  const allUsers = [...userInfo.entries()];
-
-  if (allUsers.length === 0) {
-    return ctx.reply('📭 Нет пользователей.');
-  }
-
-  let text = '👥 *Список пользователей:*\n\n';
-  const buttons = [];
-
-  allUsers.forEach(([id, info], index) => {
-    const username = info.username ? `@${info.username}` : `(без username)`;
-    const status = users.get(id);
-    const statusEmoji =
-      status === 'approved' ? '✅' :
-      status === 'blocked' ? '🚫' :
-      '⏳';
-
-    text += `${index + 1}. ${username} — \`${id}\` ${statusEmoji}\n`;
-
-    buttons.push([
-      Markup.button.callback(
-        `${index + 1}. ${username}`,
-        `manage_${id}`
-      )
-    ]);
-  });
-
-  return ctx.reply(text, {
-    parse_mode: 'Markdown',
-    reply_markup: Markup.inlineKeyboard(buttons).reply_markup
-  });
-});
-
-// ===============================
-//   MANAGE USER
-// ===============================
-
-bot.action(/^manage_(\d+)$/, async (ctx) => {
-  if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery('❌ Нет доступа');
-
-  const targetId = parseInt(ctx.match[1]);
-  const info = userInfo.get(targetId);
-  const status = users.get(targetId);
-
-  const username = info?.username ? `@${info.username}` : `(без username)`;
-  const statusText =
-    status === 'approved' ? '✅ Одобрен' :
-    status === 'blocked' ? '🚫 Заблокирован' :
-    '⏳ Ожидает';
-
-  await ctx.answerCbQuery();
-  await ctx.reply(
-    `👤 *Пользователь:* ${username}\n` +
-    `🆔 ID: \`${targetId}\`\n` +
-    `Статус: ${statusText}`,
-    {
-      parse_mode: 'Markdown',
-      reply_markup: Markup.inlineKeyboard([
-        [
-          Markup.button.callback('✅ Одобрить', `approve_${targetId}`),
-          Markup.button.callback('🚫 Заблокировать', `block_${targetId}`)
-        ]
-      ]).reply_markup
-    }
-  );
-});
-
-// ===============================
-//   MIDDLEWARE
-// ===============================
-
-bot.use(async (ctx, next) => {
-  const userId = ctx.from?.id;
-
-  if (ctx.callbackQuery) return next();
-
-  const text = ctx.message?.text?.trim();
-  if (!text) return next();
-
-  if (text === '/start') return next();
-  if (text.startsWith('/devbygemsbuyer')) return next();
-
-  if (isBlocked(userId)) return;
-
-  if (!isApproved(userId)) {
-    if (users.get(userId) === 'pending') {
-      return ctx.reply('⏳ Ожидай одобрения администратора.');
-    }
-    return;
-  }
-
-  return next();
-});
-
-// ===============================
-//   /cancel
+//   /cancel — отмена действия
 // ===============================
 
 bot.command("cancel", (ctx) => {
   const userId = ctx.from.id;
-  if (!isApproved(userId)) return;
 
   if (userState.has(userId)) {
     userState.delete(userId);
-    return ctx.reply("❌ Действие отменено.");
+    return ctx.reply("❌ Действие отменено. Можешь ввести новый адрес токена.");
   }
 
   ctx.reply("Нет активного действия.");
 });
 
 // ===============================
-//   /stop
+//   /stop — остановка всех трекингов
 // ===============================
 
 bot.command("stop", (ctx) => {
   const userId = ctx.from.id;
-  if (!isApproved(userId)) return;
 
   if (!userTrackers.has(userId)) {
     return ctx.reply("❌ У тебя нет активных отслеживаний.");
@@ -386,55 +171,44 @@ bot.command("stop", (ctx) => {
 
   userTrackers.get(userId).forEach(t => clearInterval(t.intervalId));
   userTrackers.delete(userId);
-  ctx.reply("🟦 Все отслеживания остановлены.");
+
+  ctx.reply("⏹ Все отслеживания остановлены.");
 });
 
 // ===============================
-//   /help
+//   /help — список команд
 // ===============================
 
 bot.command("help", (ctx) => {
-  const userId = ctx.from.id;
-  if (!isApproved(userId)) return;
-
   ctx.reply(
     "📘 *Команды бота:*\n\n" +
-    "/start — начать\n" +
-    "/help — помощь\n" +
-    "/cancel — отменить действие\n" +
-    "/stop — остановить отслеживания\n\n" +
+    "/start — начать работу\n" +
+    "/help — список команд\n" +
+    "/cancel — отменить текущее действие\n" +
+    "/stop — остановить все отслеживания\n\n" +
     "Просто введи адрес токена TON.",
     { parse_mode: "Markdown" }
   );
 });
 
 // ===============================
-//   TEXT HANDLER
+//   ОБРАБОТКА ТЕКСТА
 // ===============================
 
 bot.on("text", async (ctx) => {
   const userId = ctx.from.id;
   const msg = ctx.message.text.trim();
 
-  if (msg.startsWith('/devbygemsbuyer')) return;
-
-  if (!isApproved(userId)) return;
-
+  // Если пользователь в процессе выбора
   if (userState.has(userId)) {
     const state = userState.get(userId);
 
+    // Шаг 2 — выбор режима
     if (state.step === 2) {
       if (msg === "1" || msg.toLowerCase() === "price") {
         state.mode = "price";
         state.step = 3;
-        return ctx.reply(
-          "Введи интервал (мс):\n\n" +
-          "30000 — 30 сек\n" +
-          "60000 — 1 мин\n" +
-          "300000 — 5 мин\n" +
-          "900000 — 15 мин\n" +
-          "3600000 — 1 час"
-        );
+        return ctx.reply("Введи интервал (мс):\n30000\n60000\n300000\n900000\n1800000\n3600000");
       }
 
       if (msg === "2" || msg.toLowerCase() === "alert") {
@@ -446,24 +220,13 @@ bot.on("text", async (ctx) => {
       return ctx.reply("Введи 1 или 2");
     }
 
+    // Шаг 3 — порог или интервал
     if (state.step === 3) {
       if (state.mode === "alert" && !state.threshold) {
         const t = parseInt(msg);
         if (isNaN(t)) return ctx.reply("Введи число (%)");
         state.threshold = t;
-        return ctx.reply(
-          "Теперь введи интервал (мс):\n\n" +
-          "30000 — 30 сек\n" +
-          "60000 — 1 мин\n" +
-          "300000 — 5 мин\n" +
-          "900000 — 15 мин\n" +
-          "3600000 — 1 час\n" +
-          "7200000 — 2 часа\n" +
-          "14400000 — 4 часа\n" +
-          "28800000 — 8 часов\n" +
-          "43200000 — 12 часов\n" +
-          "86400000 — 24 часа"
-        );
+        return ctx.reply("Теперь введи интервал проверки (мс):");
       }
 
       const interval = parseInt(msg);
@@ -484,8 +247,8 @@ bot.on("text", async (ctx) => {
     }
   }
 
-  // TOKEN ADDRESS
-  if (/^[A-Za-z0-9]{48,}$/.test(msg)) {
+  // Если пользователь вводит адрес токена
+  if (msg.length > 30) {
     ctx.reply("⏳ Проверяю токен...");
 
     const data = await getTokenPrice(msg);
@@ -497,7 +260,13 @@ bot.on("text", async (ctx) => {
       { parse_mode: "Markdown" }
     );
 
-    userState.set(userId, { step: 2, address: msg, mode: null, threshold: null });
+    userState.set(userId, {
+      step: 2,
+      address: msg,
+      mode: null,
+      threshold: null
+    });
+
     return;
   }
 
@@ -505,33 +274,10 @@ bot.on("text", async (ctx) => {
 });
 
 // ===============================
-//   LOGGING (ONLY ADMIN)
-// ===============================
-
-bot.on('message', (ctx) => {
-  if (ctx.from.id === ADMIN_ID) {
-    ctx.reply("DEBUG:\n" + JSON.stringify(ctx.message, null, 2));
-  }
-});
-
-// ===============================
-//   KEEPALIVE
+//   KEEPALIVE + ЗАПУСК
 // ===============================
 
 setInterval(() => console.log("💓 keepalive"), 20000);
 
-// ===============================
-//   EXPRESS SERVER FOR RENDER
-// ===============================
-
-const app = express();
-app.get("/", (req, res) => res.send("Bot is running"));
-app.listen(process.env.PORT || 3000, () => {
-  console.log("HTTP server started");
-});
-
-// ===============================
-//   START BOT
-// ===============================
-
 bot.launch();
+console.log("🚀 Bot запущен (Railway-friendly)");
